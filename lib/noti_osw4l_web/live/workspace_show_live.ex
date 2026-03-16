@@ -5,6 +5,7 @@ defmodule NotiOsw4lWeb.WorkspaceShowLive do
   alias NotiOsw4l.Notes
   alias NotiOsw4l.Chat
   alias NotiOsw4l.Accounts
+  alias NotiOsw4l.Workers.ActivityLogWorker
   alias NotiOsw4lWeb.Presence
 
   @colors ~w(#ef4444 #f97316 #eab308 #22c55e #06b6d4 #3b82f6 #8b5cf6 #ec4899)
@@ -123,9 +124,10 @@ defmodule NotiOsw4lWeb.WorkspaceShowLive do
       })
 
     case Notes.create_note(attrs) do
-      {:ok, _note} ->
+      {:ok, note} ->
         notes = Notes.list_notes(socket.assigns.workspace.id)
         broadcast_workspace(socket, :notes_updated)
+        log_activity(socket, "created", "note", note.id, %{title: note.title})
 
         {:noreply,
          socket
@@ -142,6 +144,7 @@ defmodule NotiOsw4lWeb.WorkspaceShowLive do
     Notes.delete_note(note)
     notes = Notes.list_notes(socket.assigns.workspace.id)
     broadcast_workspace(socket, :notes_updated)
+    log_activity(socket, "deleted", "note", note.id, %{title: note.title})
     {:noreply, socket |> assign(notes: notes) |> put_flash(:info, "Nota eliminada")}
   end
 
@@ -155,9 +158,10 @@ defmodule NotiOsw4lWeb.WorkspaceShowLive do
       }
 
       case Notes.create_task(attrs) do
-        {:ok, _task} ->
+        {:ok, task} ->
           notes = Notes.list_notes(socket.assigns.workspace.id)
           broadcast_workspace(socket, :notes_updated)
+          log_activity(socket, "created", "task", task.id, %{title: title})
           {:noreply, assign(socket, notes: notes)}
 
         {:error, _changeset} ->
@@ -172,9 +176,11 @@ defmodule NotiOsw4lWeb.WorkspaceShowLive do
     user_id = socket.assigns.current_user.id
 
     case Notes.toggle_task(id, user_id) do
-      {:ok, _task} ->
+      {:ok, task} ->
         notes = Notes.list_notes(socket.assigns.workspace.id)
         broadcast_workspace(socket, :notes_updated)
+        action = if task.completed, do: "completed", else: "uncompleted"
+        log_activity(socket, action, "task", task.id, %{title: task.title})
         {:noreply, assign(socket, notes: notes)}
 
       {:error, _} ->
@@ -329,6 +335,17 @@ defmodule NotiOsw4lWeb.WorkspaceShowLive do
     )
   end
 
+  defp log_activity(socket, action, entity_type, entity_id, metadata) do
+    ActivityLogWorker.enqueue(
+      action,
+      entity_type,
+      entity_id,
+      socket.assigns.workspace.id,
+      socket.assigns.current_user.id,
+      metadata
+    )
+  end
+
   defp list_cursors(topic, current_user_id) do
     topic
     |> Presence.list()
@@ -371,6 +388,9 @@ defmodule NotiOsw4lWeb.WorkspaceShowLive do
           <p :if={@workspace.description} class="text-zinc-500">{@workspace.description}</p>
         </div>
         <div class="flex gap-2">
+          <.link navigate={~p"/workspaces/#{@workspace.id}/activity"} class="btn btn-ghost text-sm">
+            Actividad
+          </.link>
           <.button phx-click="toggle_chat" class="text-sm">
             Chat
           </.button>
