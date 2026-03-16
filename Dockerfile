@@ -1,14 +1,10 @@
-ARG ELIXIR_VERSION=1.19.5
-ARG OTP_VERSION=28.4
-ARG DEBIAN_CODENAME=bookworm
-
-ARG BUILDER_IMAGE="hexpm/elixir:${ELIXIR_VERSION}-erlang-${OTP_VERSION}-debian-${DEBIAN_CODENAME}-20250407"
-ARG RUNNER_IMAGE="debian:${DEBIAN_CODENAME}-slim"
+ARG BUILDER_IMAGE="hexpm/elixir:1.19-erlang-28.4-debian-bookworm-20260223"
+ARG RUNNER_IMAGE="debian:bookworm-slim"
 
 # Build stage
 FROM ${BUILDER_IMAGE} AS builder
 
-RUN apt-get update -y && apt-get install -y build-essential git \
+RUN apt-get update -y && apt-get install -y build-essential git pkg-config libssl-dev \
     && apt-get clean && rm -f /var/lib/apt/lists/*_*
 
 WORKDIR /app
@@ -29,8 +25,8 @@ COPY priv priv
 COPY lib lib
 COPY assets assets
 
-RUN mix assets.deploy
 RUN mix compile
+RUN mix assets.deploy
 
 COPY config/runtime.exs config/
 RUN mix release
