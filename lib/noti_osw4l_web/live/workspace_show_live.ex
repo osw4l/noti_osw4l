@@ -391,6 +391,9 @@ defmodule NotiOsw4lWeb.WorkspaceShowLive do
           <.link navigate={~p"/workspaces/#{@workspace.id}/activity"} class="btn btn-ghost text-sm">
             Actividad
           </.link>
+          <.link navigate={~p"/workspaces/#{@workspace.id}/call"} class="btn btn-ghost text-sm">
+            Llamada
+          </.link>
           <.button phx-click="toggle_chat" class="text-sm">
             Chat
           </.button>

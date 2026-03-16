@@ -25,6 +25,8 @@ defmodule NotiOsw4lWeb.Router do
       live "/workspaces", WorkspaceListLive
       live "/workspaces/:id", WorkspaceShowLive
       live "/workspaces/:id/activity", ActivityLogLive
+      live "/workspaces/:id/call", VideoCallLive
+      live "/workspaces/:id/call/:publisher_user_id", VideoPlayerLive
       live "/online", OnlineUsersLive
       live "/browse", BrowseWorkspacesLive
     end

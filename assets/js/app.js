@@ -24,6 +24,11 @@ import {Socket} from "phoenix"
 import {LiveSocket} from "phoenix_live_view"
 import {hooks as colocatedHooks} from "phoenix-colocated/noti_osw4l"
 import topbar from "../vendor/topbar"
+import {createPublisherHook, createPlayerHook} from "live_ex_webrtc"
+
+const iceServers = [{ urls: "stun:stun.l.google.com:19302" }]
+const PublisherHook = createPublisherHook(iceServers)
+const PlayerHook = createPlayerHook(iceServers)
 
 const CursorTracker = {
   mounted() {
@@ -64,7 +69,7 @@ const csrfToken = document.querySelector("meta[name='csrf-token']").getAttribute
 const liveSocket = new LiveSocket("/live", Socket, {
   longPollFallbackMs: 2500,
   params: {_csrf_token: csrfToken},
-  hooks: {...colocatedHooks, CursorTracker, TaskDescriptionInput, ChatScroll},
+  hooks: {...colocatedHooks, CursorTracker, TaskDescriptionInput, ChatScroll, PublisherHook, PlayerHook},
 })
 
 // Show progress bar on live navigation and form submits
