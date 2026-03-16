@@ -1,0 +1,34 @@
+defmodule NotiOsw4l.Application do
+  # See https://hexdocs.pm/elixir/Application.html
+  # for more information on OTP Applications
+  @moduledoc false
+
+  use Application
+
+  @impl true
+  def start(_type, _args) do
+    children = [
+      NotiOsw4lWeb.Telemetry,
+      NotiOsw4l.Repo,
+      {DNSCluster, query: Application.get_env(:noti_osw4l, :dns_cluster_query) || :ignore},
+      {Phoenix.PubSub, name: NotiOsw4l.PubSub},
+      # Start a worker by calling: NotiOsw4l.Worker.start_link(arg)
+      # {NotiOsw4l.Worker, arg},
+      # Start to serve requests, typically the last entry
+      NotiOsw4lWeb.Endpoint
+    ]
+
+    # See https://hexdocs.pm/elixir/Supervisor.html
+    # for other strategies and supported options
+    opts = [strategy: :one_for_one, name: NotiOsw4l.Supervisor]
+    Supervisor.start_link(children, opts)
+  end
+
+  # Tell Phoenix to update the endpoint configuration
+  # whenever the application is updated.
+  @impl true
+  def config_change(changed, _new, removed) do
+    NotiOsw4lWeb.Endpoint.config_change(changed, removed)
+    :ok
+  end
+end
