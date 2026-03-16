@@ -12,9 +12,7 @@ defmodule NotiOsw4l.Application do
       NotiOsw4l.Repo,
       {DNSCluster, query: Application.get_env(:noti_osw4l, :dns_cluster_query) || :ignore},
       {Phoenix.PubSub, name: NotiOsw4l.PubSub},
-      # Start a worker by calling: NotiOsw4l.Worker.start_link(arg)
-      # {NotiOsw4l.Worker, arg},
-      # Start to serve requests, typically the last entry
+      {Oban, Application.fetch_env!(:noti_osw4l, Oban)},
       NotiOsw4lWeb.Endpoint
     ]
 
