@@ -31,6 +31,8 @@
     </script>
   </head>
   <body>
-    {@inner_content}
+    <Layouts.app flash={assigns[:flash] || %{}} current_user={assigns[:current_user]}>
+      {@inner_content}
+    </Layouts.app>
   </body>
 </html>

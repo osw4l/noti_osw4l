@@ -25,11 +25,37 @@ import {LiveSocket} from "phoenix_live_view"
 import {hooks as colocatedHooks} from "phoenix-colocated/noti_osw4l"
 import topbar from "../vendor/topbar"
 
+const CursorTracker = {
+  mounted() {
+    this.throttleTimer = null
+    this.el.addEventListener("mousemove", (e) => {
+      if (this.throttleTimer) return
+      this.throttleTimer = setTimeout(() => {
+        this.throttleTimer = null
+      }, 50)
+      const rect = this.el.getBoundingClientRect()
+      const x = ((e.clientX - rect.left) / rect.width * 100).toFixed(1)
+      const y = ((e.clientY - rect.top) / rect.height * 100).toFixed(1)
+      this.pushEvent("cursor_move", {x: parseFloat(x), y: parseFloat(y)})
+    })
+    this.el.addEventListener("mouseleave", () => {
+      this.pushEvent("cursor_leave", {})
+    })
+  }
+}
+
+const TaskDescriptionInput = {
+  mounted() {
+    this.el.focus()
+    this.el.setSelectionRange(this.el.value.length, this.el.value.length)
+  }
+}
+
 const csrfToken = document.querySelector("meta[name='csrf-token']").getAttribute("content")
 const liveSocket = new LiveSocket("/live", Socket, {
   longPollFallbackMs: 2500,
   params: {_csrf_token: csrfToken},
-  hooks: {...colocatedHooks},
+  hooks: {...colocatedHooks, CursorTracker, TaskDescriptionInput},
 })
 
 // Show progress bar on live navigation and form submits

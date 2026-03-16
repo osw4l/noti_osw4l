@@ -3,20 +3,47 @@ defmodule NotiOsw4lWeb.WorkspaceShowLive do
 
   alias NotiOsw4l.Workspaces
   alias NotiOsw4l.Notes
+  alias NotiOsw4lWeb.Presence
+
+  @colors ~w(#ef4444 #f97316 #eab308 #22c55e #06b6d4 #3b82f6 #8b5cf6 #ec4899)
 
   def mount(%{"id" => id}, _session, socket) do
     workspace = Workspaces.get_workspace!(id)
     user_id = socket.assigns.current_user.id
 
     if Workspaces.user_has_access?(workspace.id, user_id) do
+      workspace_topic = "workspace:#{workspace.id}"
+      presence_topic = "workspace_presence:#{workspace.id}"
+
       if connected?(socket) do
-        Phoenix.PubSub.subscribe(NotiOsw4l.PubSub, "workspace:#{workspace.id}")
+        Phoenix.PubSub.subscribe(NotiOsw4l.PubSub, workspace_topic)
+        Phoenix.PubSub.subscribe(NotiOsw4l.PubSub, presence_topic)
+
+        color = Enum.at(@colors, rem(user_id, length(@colors)))
+
+        Presence.track(self(), presence_topic, to_string(user_id), %{
+          username: socket.assigns.current_user.username,
+          user_id: user_id,
+          color: color,
+          cursor_x: nil,
+          cursor_y: nil
+        })
+
+        # Track on platform presence too
+        Presence.track(self(), "platform:presence", to_string(user_id), %{
+          username: socket.assigns.current_user.username,
+          user_id: user_id,
+          workspace_id: workspace.id,
+          workspace_name: workspace.name,
+          joined_at: DateTime.utc_now()
+        })
       end
 
       members = Workspaces.workspace_members(workspace.id)
       pending = Workspaces.pending_requests(workspace.id)
       is_owner = Workspaces.is_owner?(workspace, user_id)
       notes = Notes.list_notes(workspace.id)
+      cursors = list_cursors(presence_topic, user_id)
 
       {:ok,
        assign(socket,
@@ -25,6 +52,8 @@ defmodule NotiOsw4lWeb.WorkspaceShowLive do
          pending_requests: pending,
          is_owner: is_owner,
          notes: notes,
+         cursors: cursors,
+         presence_topic: presence_topic,
          page_title: workspace.name,
          editing: false,
          show_note_form: false,
@@ -172,10 +201,39 @@ defmodule NotiOsw4lWeb.WorkspaceShowLive do
     {:noreply, assign(socket, notes: notes)}
   end
 
+  # Cursor events
+  def handle_event("cursor_move", %{"x" => x, "y" => y}, socket) do
+    user_id = socket.assigns.current_user.id
+    topic = socket.assigns.presence_topic
+
+    Presence.update(self(), topic, to_string(user_id), fn meta ->
+      %{meta | cursor_x: x, cursor_y: y}
+    end)
+
+    {:noreply, socket}
+  end
+
+  def handle_event("cursor_leave", _params, socket) do
+    user_id = socket.assigns.current_user.id
+    topic = socket.assigns.presence_topic
+
+    Presence.update(self(), topic, to_string(user_id), fn meta ->
+      %{meta | cursor_x: nil, cursor_y: nil}
+    end)
+
+    {:noreply, socket}
+  end
+
   # PubSub
   def handle_info(:notes_updated, socket) do
     notes = Notes.list_notes(socket.assigns.workspace.id)
     {:noreply, assign(socket, notes: notes)}
+  end
+
+  def handle_info(%Phoenix.Socket.Broadcast{event: "presence_diff"}, socket) do
+    user_id = socket.assigns.current_user.id
+    cursors = list_cursors(socket.assigns.presence_topic, user_id)
+    {:noreply, assign(socket, cursors: cursors)}
   end
 
   def handle_info(_msg, socket), do: {:noreply, socket}
@@ -188,9 +246,38 @@ defmodule NotiOsw4lWeb.WorkspaceShowLive do
     )
   end
 
+  defp list_cursors(topic, current_user_id) do
+    topic
+    |> Presence.list()
+    |> Enum.flat_map(fn {user_id_str, %{metas: [meta | _]}} ->
+      if String.to_integer(user_id_str) != current_user_id && meta.cursor_x do
+        [meta]
+      else
+        []
+      end
+    end)
+  end
+
   def render(assigns) do
     ~H"""
-    <div class="max-w-4xl mx-auto mt-8">
+    <div class="max-w-4xl mx-auto mt-8 relative" id="workspace-area" phx-hook="CursorTracker">
+      <%!-- Remote cursors --%>
+      <div
+        :for={cursor <- @cursors}
+        class="pointer-events-none absolute z-50 transition-all duration-75 ease-out"
+        style={"left: #{cursor.cursor_x}%; top: #{cursor.cursor_y}%"}
+      >
+        <svg width="16" height="20" viewBox="0 0 16 20" fill={cursor.color}>
+          <path d="M0 0L16 12L8 12L4 20L0 0Z" />
+        </svg>
+        <span
+          class="text-xs text-white px-1.5 py-0.5 rounded-full whitespace-nowrap ml-2"
+          style={"background-color: #{cursor.color}"}
+        >
+          {cursor.username}
+        </span>
+      </div>
+
       <%!-- Header --%>
       <div class="flex items-center justify-between mb-6">
         <div>
