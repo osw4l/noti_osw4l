@@ -1,0 +1,12 @@
+.git
+_build
+deps
+.elixir_ls
+.claude
+node_modules
+priv/static/assets
+tmp
+cover
+doc
+*.ez
+erl_crash.dump
