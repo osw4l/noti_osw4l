@@ -2,10 +2,11 @@ import Config
 
 # Configure your database
 config :noti_osw4l, NotiOsw4l.Repo,
-  username: "postgres",
-  password: "postgres",
-  hostname: "localhost",
-  database: "noti_osw4l_dev",
+  username: System.get_env("DB_USER", "postgres"),
+  password: System.get_env("DB_PASSWORD", "postgres"),
+  hostname: System.get_env("DB_HOST", "localhost"),
+  database: System.get_env("DB_NAME", "noti_osw4l_dev"),
+  port: String.to_integer(System.get_env("DB_PORT", "5432")),
   stacktrace: true,
   show_sensitive_data_on_connection_error: true,
   pool_size: 10

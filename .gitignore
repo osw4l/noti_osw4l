@@ -35,3 +35,7 @@ noti_osw4l-*.tar
 npm-debug.log
 /assets/node_modules/
 
+# Docker volumes
+pgdata/
+dbgate_data/
+
