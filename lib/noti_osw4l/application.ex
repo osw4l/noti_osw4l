@@ -13,6 +13,7 @@ defmodule NotiOsw4l.Application do
       {DNSCluster, query: Application.get_env(:noti_osw4l, :dns_cluster_query) || :ignore},
       {Phoenix.PubSub, name: NotiOsw4l.PubSub},
       {Oban, Application.fetch_env!(:noti_osw4l, Oban)},
+      NotiOsw4lWeb.Presence,
       NotiOsw4lWeb.Endpoint
     ]
 
