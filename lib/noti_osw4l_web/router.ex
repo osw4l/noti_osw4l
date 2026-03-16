@@ -23,6 +23,7 @@ defmodule NotiOsw4lWeb.Router do
     live_session :authenticated,
       on_mount: [{NotiOsw4lWeb.UserAuth, :ensure_authenticated}] do
       live "/workspaces", WorkspaceListLive
+      live "/workspaces/:id", WorkspaceShowLive
     end
   end
 
