@@ -11,6 +11,10 @@ config :noti_osw4l,
   ecto_repos: [NotiOsw4l.Repo],
   generators: [timestamp_type: :utc_datetime]
 
+config :noti_osw4l, Oban,
+  repo: NotiOsw4l.Repo,
+  queues: [default: 10, activity: 5]
+
 # Configures the endpoint
 config :noti_osw4l, NotiOsw4lWeb.Endpoint,
   url: [host: "localhost"],
