@@ -15,6 +15,24 @@ services:
       timeout: 5s
       retries: 5
 
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "4000:4000"
+    environment:
+      DATABASE_URL: ecto://postgres:postgres@db/noti_osw4l_dev
+      SECRET_KEY_BASE: "m3Ks9xP2vR7nQ8wL1jF6hT0yB4dG5cA2eI8uO3pN7sV1xZ6kJ4qW9rM0bH5fD2gY"
+      PHX_HOST: localhost
+      PORT: "4000"
+      PHX_SERVER: "true"
+    command: >
+      sh -c "/app/bin/migrate && /app/bin/server"
+
   dbgate:
     image: dbgate/dbgate:latest
     depends_on:

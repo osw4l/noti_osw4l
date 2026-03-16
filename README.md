@@ -33,11 +33,26 @@ Espacio de trabajo colaborativo en tiempo real, inspirado en Notion. Construido 
 - Erlang/OTP 28+
 - Docker y Docker Compose
 
-## Setup
+## Setup con Docker (recomendado)
 
 ```bash
-# Levantar PostgreSQL y DBGate
-docker compose up -d
+# Levantar todo: app + PostgreSQL + DBGate
+docker compose up --build
+
+# O en background
+docker compose up --build -d
+```
+
+- App: [localhost:4000](http://localhost:4000)
+- DBGate: [localhost:3000](http://localhost:3000)
+
+Las migraciones se ejecutan automaticamente al iniciar el contenedor.
+
+## Setup local (desarrollo)
+
+```bash
+# Levantar solo BD y DBGate
+docker compose up db dbgate -d
 
 # Instalar dependencias y configurar BD
 mix setup
