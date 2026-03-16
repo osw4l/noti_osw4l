@@ -3,6 +3,8 @@ defmodule NotiOsw4lWeb.WorkspaceShowLive do
 
   alias NotiOsw4l.Workspaces
   alias NotiOsw4l.Notes
+  alias NotiOsw4l.Chat
+  alias NotiOsw4l.Accounts
   alias NotiOsw4lWeb.Presence
 
   @colors ~w(#ef4444 #f97316 #eab308 #22c55e #06b6d4 #3b82f6 #8b5cf6 #ec4899)
@@ -43,6 +45,7 @@ defmodule NotiOsw4lWeb.WorkspaceShowLive do
       pending = Workspaces.pending_requests(workspace.id)
       is_owner = Workspaces.is_owner?(workspace, user_id)
       notes = Notes.list_notes(workspace.id)
+      messages = Chat.list_messages(workspace.id)
       cursors = list_cursors(presence_topic, user_id)
 
       {:ok,
@@ -52,6 +55,7 @@ defmodule NotiOsw4lWeb.WorkspaceShowLive do
          pending_requests: pending,
          is_owner: is_owner,
          notes: notes,
+         messages: messages,
          cursors: cursors,
          presence_topic: presence_topic,
          page_title: workspace.name,
@@ -59,7 +63,11 @@ defmodule NotiOsw4lWeb.WorkspaceShowLive do
          show_note_form: false,
          note_form: to_form(Notes.change_note()),
          editing_task: nil,
-         task_description: ""
+         task_description: "",
+         show_chat: false,
+         show_invite: false,
+         invite_query: "",
+         invite_results: []
        )}
     else
       {:ok,
@@ -201,6 +209,71 @@ defmodule NotiOsw4lWeb.WorkspaceShowLive do
     {:noreply, assign(socket, notes: notes)}
   end
 
+  # Chat
+  def handle_event("toggle_chat", _params, socket) do
+    {:noreply, assign(socket, show_chat: !socket.assigns.show_chat)}
+  end
+
+  def handle_event("send_message", %{"body" => body}, socket) do
+    if String.trim(body) != "" do
+      attrs = %{
+        "body" => body,
+        "workspace_id" => socket.assigns.workspace.id,
+        "user_id" => socket.assigns.current_user.id
+      }
+
+      case Chat.create_message(attrs) do
+        {:ok, message} ->
+          broadcast_workspace(socket, {:new_message, message})
+          messages = socket.assigns.messages ++ [message]
+          {:noreply, assign(socket, messages: messages)}
+
+        {:error, _} ->
+          {:noreply, put_flash(socket, :error, "Error al enviar mensaje")}
+      end
+    else
+      {:noreply, socket}
+    end
+  end
+
+  # Invite
+  def handle_event("toggle_invite", _params, socket) do
+    {:noreply,
+     assign(socket,
+       show_invite: !socket.assigns.show_invite,
+       invite_query: "",
+       invite_results: []
+     )}
+  end
+
+  def handle_event("search_users", %{"query" => query}, socket) do
+    results =
+      if String.length(query) >= 2 do
+        Accounts.search_users(query)
+      else
+        []
+      end
+
+    {:noreply, assign(socket, invite_query: query, invite_results: results)}
+  end
+
+  def handle_event("invite_user", %{"user_id" => user_id}, socket) do
+    case Workspaces.invite_user(
+           socket.assigns.workspace.id,
+           String.to_integer(user_id),
+           socket.assigns.current_user.id
+         ) do
+      {:ok, _} ->
+        {:noreply,
+         socket
+         |> put_flash(:info, "Invitación enviada")
+         |> assign(show_invite: false, invite_query: "", invite_results: [])}
+
+      {:error, _} ->
+        {:noreply, put_flash(socket, :error, "No se pudo invitar (ya tiene acceso o invitación)")}
+    end
+  end
+
   # Cursor events
   def handle_event("cursor_move", %{"x" => x, "y" => y}, socket) do
     user_id = socket.assigns.current_user.id
@@ -228,6 +301,16 @@ defmodule NotiOsw4lWeb.WorkspaceShowLive do
   def handle_info(:notes_updated, socket) do
     notes = Notes.list_notes(socket.assigns.workspace.id)
     {:noreply, assign(socket, notes: notes)}
+  end
+
+  def handle_info({:new_message, message}, socket) do
+    # Avoid duplicating messages for the sender
+    if message.user_id != socket.assigns.current_user.id do
+      messages = socket.assigns.messages ++ [message]
+      {:noreply, assign(socket, messages: messages)}
+    else
+      {:noreply, socket}
+    end
   end
 
   def handle_info(%Phoenix.Socket.Broadcast{event: "presence_diff"}, socket) do
@@ -287,9 +370,17 @@ defmodule NotiOsw4lWeb.WorkspaceShowLive do
           <h1 class="text-2xl font-bold mt-1">{@workspace.name}</h1>
           <p :if={@workspace.description} class="text-zinc-500">{@workspace.description}</p>
         </div>
-        <.button :if={@is_owner} phx-click="toggle_edit">
-          {if @editing, do: "Cancelar", else: "Editar"}
-        </.button>
+        <div class="flex gap-2">
+          <.button phx-click="toggle_chat" class="text-sm">
+            Chat
+          </.button>
+          <.button :if={@is_owner} phx-click="toggle_invite" class="text-sm">
+            Invitar
+          </.button>
+          <.button :if={@is_owner} phx-click="toggle_edit">
+            {if @editing, do: "Cancelar", else: "Editar"}
+          </.button>
+        </div>
       </div>
 
       <%!-- Edit form --%>
@@ -492,6 +583,88 @@ defmodule NotiOsw4lWeb.WorkspaceShowLive do
             </form>
           </div>
         </div>
+      </div>
+
+      <%!-- Invite Modal --%>
+      <div :if={@show_invite} class="fixed inset-0 z-40 flex items-center justify-center bg-black/50">
+        <div class="bg-white rounded-lg shadow-xl p-6 w-96 max-h-96">
+          <div class="flex items-center justify-between mb-4">
+            <h3 class="text-lg font-semibold">Invitar Usuario</h3>
+            <button phx-click="toggle_invite" class="text-zinc-400 hover:text-zinc-600">x</button>
+          </div>
+          <input
+            type="text"
+            phx-keyup="search_users"
+            phx-value-query={@invite_query}
+            value={@invite_query}
+            placeholder="Buscar por usuario o email..."
+            class="w-full border rounded px-3 py-2 text-sm mb-3"
+            autocomplete="off"
+            name="query"
+          />
+          <div class="space-y-2 max-h-48 overflow-y-auto">
+            <div
+              :for={user <- @invite_results}
+              class="flex items-center justify-between p-2 hover:bg-zinc-50 rounded"
+            >
+              <div>
+                <span class="font-medium text-sm">{user.username}</span>
+                <span class="text-xs text-zinc-400 ml-2">{user.email}</span>
+              </div>
+              <button
+                phx-click="invite_user"
+                phx-value-user_id={user.id}
+                class="px-2 py-1 bg-blue-500 text-white rounded text-xs hover:bg-blue-600"
+              >
+                Invitar
+              </button>
+            </div>
+            <p
+              :if={@invite_results == [] && String.length(@invite_query) >= 2}
+              class="text-sm text-zinc-400 text-center py-2"
+            >
+              No se encontraron usuarios
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <%!-- Chat Panel --%>
+      <div
+        :if={@show_chat}
+        class="fixed bottom-0 right-4 w-96 bg-white border border-zinc-200 rounded-t-lg shadow-xl z-30"
+      >
+        <div class="flex items-center justify-between px-4 py-2 bg-zinc-900 text-white rounded-t-lg">
+          <span class="font-semibold text-sm">Chat</span>
+          <button phx-click="toggle_chat" class="text-zinc-300 hover:text-white">x</button>
+        </div>
+        <div class="h-72 overflow-y-auto p-3 space-y-2" id="chat-messages" phx-hook="ChatScroll">
+          <div :for={msg <- @messages} class="text-sm">
+            <span class="font-semibold text-zinc-700">{msg.user.username}:</span>
+            <span class="text-zinc-600">{msg.body}</span>
+            <span class="text-xs text-zinc-300 ml-1">
+              {Calendar.strftime(msg.inserted_at, "%H:%M")}
+            </span>
+          </div>
+          <p :if={@messages == []} class="text-center text-zinc-400 text-sm py-4">
+            Sin mensajes aún
+          </p>
+        </div>
+        <form phx-submit="send_message" class="border-t p-2 flex gap-2">
+          <input
+            type="text"
+            name="body"
+            placeholder="Escribe un mensaje..."
+            class="flex-1 text-sm border rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-blue-500"
+            autocomplete="off"
+          />
+          <button
+            type="submit"
+            class="px-3 py-1 bg-blue-500 text-white rounded text-sm hover:bg-blue-600"
+          >
+            Enviar
+          </button>
+        </form>
       </div>
     </div>
     """

@@ -44,6 +44,15 @@ const CursorTracker = {
   }
 }
 
+const ChatScroll = {
+  mounted() {
+    this.el.scrollTop = this.el.scrollHeight
+  },
+  updated() {
+    this.el.scrollTop = this.el.scrollHeight
+  }
+}
+
 const TaskDescriptionInput = {
   mounted() {
     this.el.focus()
@@ -55,7 +64,7 @@ const csrfToken = document.querySelector("meta[name='csrf-token']").getAttribute
 const liveSocket = new LiveSocket("/live", Socket, {
   longPollFallbackMs: 2500,
   params: {_csrf_token: csrfToken},
-  hooks: {...colocatedHooks, CursorTracker, TaskDescriptionInput},
+  hooks: {...colocatedHooks, CursorTracker, TaskDescriptionInput, ChatScroll},
 })
 
 // Show progress bar on live navigation and form submits

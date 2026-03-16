@@ -44,6 +44,9 @@ defmodule NotiOsw4lWeb.Layouts do
             <.link navigate={~p"/online"} class="hover:text-zinc-300">
               Online
             </.link>
+            <.link navigate={~p"/browse"} class="hover:text-zinc-300">
+              Explorar
+            </.link>
           </div>
         </div>
         <div :if={@current_user} class="flex items-center gap-4 text-sm">
