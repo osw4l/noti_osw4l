@@ -41,9 +41,6 @@ defmodule NotiOsw4lWeb.Layouts do
             <.link navigate={~p"/workspaces"} class="hover:text-zinc-300">
               Espacios
             </.link>
-            <.link navigate={~p"/online"} class="hover:text-zinc-300">
-              Online
-            </.link>
             <.link navigate={~p"/browse"} class="hover:text-zinc-300">
               Explorar
             </.link>
@@ -64,7 +61,7 @@ defmodule NotiOsw4lWeb.Layouts do
       </nav>
     </header>
 
-    <main class="px-4 py-8 sm:px-6 lg:px-8">
+    <main>
       {render_slot(@inner_block)}
     </main>
 
