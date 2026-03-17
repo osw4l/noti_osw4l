@@ -31,31 +31,31 @@ defmodule NotiOsw4lWeb.Layouts do
 
   def app(assigns) do
     ~H"""
-    <header class="bg-zinc-900 text-white px-4 sm:px-6 lg:px-8">
+    <header class="bg-neutral text-neutral-content px-4 sm:px-6 lg:px-8">
       <nav class="flex items-center justify-between h-14 max-w-6xl mx-auto">
         <div class="flex items-center gap-6">
           <.link navigate={~p"/workspaces"} class="text-lg font-bold tracking-tight">
             noti_osw4l
           </.link>
           <div :if={@current_user} class="flex items-center gap-4 text-sm">
-            <.link navigate={~p"/workspaces"} class="hover:text-zinc-300">
+            <.link navigate={~p"/workspaces"} class="hover:text-neutral-content/70">
               Espacios
             </.link>
-            <.link navigate={~p"/browse"} class="hover:text-zinc-300">
+            <.link navigate={~p"/browse"} class="hover:text-neutral-content/70">
               Explorar
             </.link>
           </div>
         </div>
         <div :if={@current_user} class="flex items-center gap-4 text-sm">
-          <span class="text-zinc-400">{@current_user.username}</span>
-          <.link href={~p"/logout"} method="delete" class="hover:text-zinc-300">
+          <span class="text-neutral-content/60">{@current_user.username}</span>
+          <.link href={~p"/logout"} method="delete" class="hover:text-neutral-content/70">
             Salir
           </.link>
           <.theme_toggle />
         </div>
         <div :if={!@current_user} class="flex items-center gap-4 text-sm">
-          <.link navigate={~p"/login"} class="hover:text-zinc-300">Login</.link>
-          <.link navigate={~p"/register"} class="hover:text-zinc-300">Registro</.link>
+          <.link navigate={~p"/login"} class="hover:text-neutral-content/70">Login</.link>
+          <.link navigate={~p"/register"} class="hover:text-neutral-content/70">Registro</.link>
           <.theme_toggle />
         </div>
       </nav>
