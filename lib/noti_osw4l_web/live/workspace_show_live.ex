@@ -9,6 +9,7 @@ defmodule NotiOsw4lWeb.WorkspaceShowLive do
   alias NotiOsw4lWeb.Presence
 
   @colors ~w(#ef4444 #f97316 #eab308 #22c55e #06b6d4 #3b82f6 #8b5cf6 #ec4899)
+  @platform_topic "platform:presence"
 
   def mount(%{"id" => id}, _session, socket) do
     workspace = Workspaces.get_workspace!(id)
@@ -23,6 +24,7 @@ defmodule NotiOsw4lWeb.WorkspaceShowLive do
         Phoenix.PubSub.subscribe(NotiOsw4l.PubSub, workspace_topic)
         Phoenix.PubSub.subscribe(NotiOsw4l.PubSub, presence_topic)
         Phoenix.PubSub.subscribe(NotiOsw4l.PubSub, call_topic)
+        Phoenix.PubSub.subscribe(NotiOsw4l.PubSub, @platform_topic)
 
         color = Enum.at(@colors, rem(user_id, length(@colors)))
 
@@ -34,13 +36,10 @@ defmodule NotiOsw4lWeb.WorkspaceShowLive do
           cursor_y: nil
         })
 
-        Presence.track(self(), "platform:presence", to_string(user_id), %{
-          username: socket.assigns.current_user.username,
-          user_id: user_id,
-          workspace_id: workspace.id,
-          workspace_name: workspace.name,
-          joined_at: DateTime.utc_now()
-        })
+        # Update platform presence with workspace info
+        Presence.update(self(), "platform:presence", to_string(user_id), fn meta ->
+          %{meta | workspace_id: workspace.id, workspace_name: workspace.name}
+        end)
       end
 
       members = Workspaces.workspace_members(workspace.id)
@@ -50,6 +49,7 @@ defmodule NotiOsw4lWeb.WorkspaceShowLive do
       messages = Chat.list_messages(workspace.id)
       cursors = list_cursors(presence_topic, user_id)
       call_participants = list_call_participants(call_topic, user_id)
+      online_ids = platform_online_ids()
 
       {:ok,
        assign(socket,
@@ -71,11 +71,10 @@ defmodule NotiOsw4lWeb.WorkspaceShowLive do
          show_invite: false,
          invite_query: "",
          invite_results: [],
-         # Voice/Video state
+         # Voice state
          in_call: false,
-         publishing: false,
          call_participants: call_participants,
-         players: %{},
+         online_member_ids: online_ids,
          # Right panel: :chat | :voice | nil
          right_panel: nil
        )}
@@ -329,86 +328,29 @@ defmodule NotiOsw4lWeb.WorkspaceShowLive do
 
   def handle_event("join_call", _params, socket) do
     user_id = socket.assigns.current_user.id
-    publisher_id = "publisher-#{user_id}"
+    username = socket.assigns.current_user.username
 
-    # Build publisher struct manually to control hook registration
-    publisher = %LiveExWebRTC.Publisher{
-      id: publisher_id,
-      pubsub: NotiOsw4l.PubSub,
-      recordings?: false,
-      recorder_opts: [],
-      ice_servers: [%{urls: "stun:stun.l.google.com:19302"}],
-      pc_genserver_opts: [],
-      record?: false
-    }
-
-    # Track in call presence
     Presence.track(self(), socket.assigns.call_topic, to_string(user_id), %{
-      username: socket.assigns.current_user.username,
-      user_id: user_id,
-      publishing: true
+      username: username,
+      user_id: user_id
     })
 
-    socket =
-      socket
-      |> assign(in_call: true, publishing: true, publisher: publisher)
-      |> attach_hook(:webrtc_handshake, :handle_info, &webrtc_handshake/2)
+    # Notify others in workspace
+    Phoenix.PubSub.broadcast(
+      NotiOsw4l.PubSub,
+      "workspace:#{socket.assigns.workspace.id}",
+      {:user_joined_call, username}
+    )
 
-    {:noreply, assign(socket, right_panel: "voice")}
+    {:noreply, assign(socket, in_call: true, right_panel: "voice")}
   end
 
   def handle_event("leave_call", _params, socket) do
     user_id = socket.assigns.current_user.id
     Presence.untrack(self(), socket.assigns.call_topic, to_string(user_id))
 
-    {:noreply,
-     assign(socket,
-       in_call: false,
-       publishing: false,
-       publisher: nil,
-       players: %{},
-       call_participants: []
-     )}
+    {:noreply, assign(socket, in_call: false, call_participants: [])}
   end
-
-  def handle_event("watch_stream", %{"user-id" => remote_user_id}, socket) do
-    publisher_id = "publisher-#{remote_user_id}"
-    player_id = "player-#{remote_user_id}-#{socket.assigns.current_user.id}"
-
-    player = %LiveExWebRTC.Player{
-      id: player_id,
-      publisher_id: publisher_id,
-      pubsub: NotiOsw4l.PubSub,
-      ice_servers: [%{urls: "stun:stun.l.google.com:19302"}],
-      pc_genserver_opts: []
-    }
-
-    players = Map.put(socket.assigns.players, remote_user_id, player)
-    {:noreply, assign(socket, players: players)}
-  end
-
-  # Combined handshake hook for both Publisher and Player
-  defp webrtc_handshake({LiveExWebRTC.Publisher, {:connected, ref, pid, _meta}}, socket) do
-    send(pid, {ref, socket.assigns.publisher})
-    {:halt, socket}
-  end
-
-  defp webrtc_handshake({LiveExWebRTC.Player, {:connected, ref, child_pid, _meta}}, socket) do
-    # Find the matching player by checking which player's child is connecting
-    # The child sends its session which contains publisher_id, match against our players
-    player =
-      socket.assigns.players
-      |> Map.values()
-      |> Enum.find(fn p -> p != nil end)
-
-    if player do
-      send(child_pid, {ref, player})
-    end
-
-    {:halt, socket}
-  end
-
-  defp webrtc_handshake(_msg, socket), do: {:cont, socket}
 
   # ── PubSub handlers ──
 
@@ -420,7 +362,22 @@ defmodule NotiOsw4lWeb.WorkspaceShowLive do
   def handle_info({:new_message, message}, socket) do
     if message.user_id != socket.assigns.current_user.id do
       messages = socket.assigns.messages ++ [message]
-      {:noreply, assign(socket, messages: messages)}
+
+      {:noreply,
+       socket
+       |> assign(messages: messages)
+       |> push_event("notify_chat", %{message: "#{message.user.username}: #{message.body}"})}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  def handle_info({:user_joined_call, username}, socket) do
+    if username != socket.assigns.current_user.username do
+      {:noreply,
+       socket
+       |> push_event("notify_call", %{message: "#{username} se unió al canal de voz"})
+       |> put_flash(:info, "#{username} se unió al canal de voz")}
     else
       {:noreply, socket}
     end
@@ -439,11 +396,18 @@ defmodule NotiOsw4lWeb.WorkspaceShowLive do
           participants = list_call_participants(socket.assigns.call_topic, user_id)
           assign(socket, call_participants: participants)
 
+        topic == @platform_topic ->
+          assign(socket, online_member_ids: platform_online_ids())
+
         true ->
           socket
       end
 
     {:noreply, socket}
+  end
+
+  def handle_info({:access_requested, username}, socket) do
+    {:noreply, put_flash(socket, :info, "#{username} ha solicitado acceso a este espacio")}
   end
 
   def handle_info(_msg, socket), do: {:noreply, socket}
@@ -481,6 +445,13 @@ defmodule NotiOsw4lWeb.WorkspaceShowLive do
     end)
   end
 
+  defp platform_online_ids do
+    @platform_topic
+    |> Presence.list()
+    |> Enum.map(fn {user_id_str, _} -> String.to_integer(user_id_str) end)
+    |> MapSet.new()
+  end
+
   defp list_call_participants(topic, current_user_id) do
     topic
     |> Presence.list()
@@ -502,7 +473,7 @@ defmodule NotiOsw4lWeb.WorkspaceShowLive do
       <div
         :for={cursor <- @cursors}
         class="pointer-events-none fixed z-50 transition-all duration-75 ease-out"
-        style={"left: #{cursor.cursor_x}%; top: #{cursor.cursor_y}%"}
+        style={"left: #{cursor.cursor_x}px; top: #{cursor.cursor_y}px"}
       >
         <svg width="16" height="20" viewBox="0 0 16 20" fill={cursor.color}>
           <path d="M0 0L16 12L8 12L4 20L0 0Z" />
@@ -521,11 +492,14 @@ defmodule NotiOsw4lWeb.WorkspaceShowLive do
           <%!-- Header --%>
           <div class="flex items-center justify-between mb-6">
             <div>
-              <.link navigate={~p"/workspaces"} class="text-sm text-zinc-500 hover:text-zinc-700">
+              <.link
+                navigate={~p"/workspaces"}
+                class="text-sm text-base-content/50 hover:text-base-content/70"
+              >
                 &larr; Volver
               </.link>
               <h1 class="text-2xl font-bold mt-1">{@workspace.name}</h1>
-              <p :if={@workspace.description} class="text-zinc-500 text-sm">
+              <p :if={@workspace.description} class="text-base-content/50 text-sm">
                 {@workspace.description}
               </p>
             </div>
@@ -539,7 +513,7 @@ defmodule NotiOsw4lWeb.WorkspaceShowLive do
               <button
                 phx-click="show_panel"
                 phx-value-panel="voice"
-                class={"p-2 rounded-lg transition-colors " <> if(@right_panel == "voice", do: "bg-green-100 text-green-700", else: "text-zinc-500 hover:bg-zinc-100")}
+                class={"p-2 rounded-lg transition-colors " <> if(@right_panel == "voice", do: "bg-success/10 text-success", else: "text-base-content/50 hover:bg-base-200")}
                 title="Voz"
               >
                 <svg
@@ -552,14 +526,14 @@ defmodule NotiOsw4lWeb.WorkspaceShowLive do
                 </svg>
                 <span
                   :if={@in_call}
-                  class="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 bg-green-500 rounded-full border-2 border-white"
+                  class="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 bg-green-500 rounded-full border-2 border-base-100"
                 >
                 </span>
               </button>
               <button
                 phx-click="show_panel"
                 phx-value-panel="chat"
-                class={"p-2 rounded-lg transition-colors " <> if(@right_panel == "chat", do: "bg-blue-100 text-blue-700", else: "text-zinc-500 hover:bg-zinc-100")}
+                class={"p-2 rounded-lg transition-colors " <> if(@right_panel == "chat", do: "bg-info/10 text-info", else: "text-base-content/50 hover:bg-base-200")}
                 title="Chat"
               >
                 <svg
@@ -578,7 +552,7 @@ defmodule NotiOsw4lWeb.WorkspaceShowLive do
               <button
                 :if={@is_owner}
                 phx-click="toggle_invite"
-                class="p-2 rounded-lg text-zinc-500 hover:bg-zinc-100 transition-colors"
+                class="p-2 rounded-lg text-base-content/50 hover:bg-base-200 transition-colors"
                 title="Invitar"
               >
                 <svg
@@ -593,7 +567,7 @@ defmodule NotiOsw4lWeb.WorkspaceShowLive do
               <button
                 :if={@is_owner}
                 phx-click="toggle_edit"
-                class="p-2 rounded-lg text-zinc-500 hover:bg-zinc-100 transition-colors"
+                class="p-2 rounded-lg text-base-content/50 hover:bg-base-200 transition-colors"
                 title="Editar"
               >
                 <svg
@@ -609,7 +583,7 @@ defmodule NotiOsw4lWeb.WorkspaceShowLive do
           </div>
 
           <%!-- Edit form --%>
-          <div :if={@editing} class="mb-6 p-4 bg-zinc-50 rounded-lg border">
+          <div :if={@editing} class="mb-6 p-4 bg-base-200 rounded-lg border border-base-300">
             <.form for={@form} phx-submit="update" class="space-y-4">
               <.input field={@form[:name]} type="text" label="Nombre" required />
               <.input field={@form[:description]} type="textarea" label="Descripción" />
@@ -619,27 +593,27 @@ defmodule NotiOsw4lWeb.WorkspaceShowLive do
 
           <%!-- Pending Requests --%>
           <div :if={@is_owner && @pending_requests != []} class="mb-6">
-            <h2 class="text-sm font-semibold text-zinc-500 uppercase tracking-wide mb-3">
+            <h2 class="text-sm font-semibold text-base-content/50 uppercase tracking-wide mb-3">
               Solicitudes
             </h2>
             <div class="space-y-2">
               <div
                 :for={req <- @pending_requests}
-                class="flex items-center justify-between p-3 bg-yellow-50 rounded-lg border border-yellow-200"
+                class="alert alert-warning"
               >
                 <span class="font-medium text-sm">{req.user.username}</span>
                 <div class="space-x-2">
                   <button
                     phx-click="accept_membership"
                     phx-value-id={req.id}
-                    class="px-2.5 py-1 bg-green-500 text-white rounded text-xs hover:bg-green-600"
+                    class="btn btn-success btn-xs"
                   >
                     Aceptar
                   </button>
                   <button
                     phx-click="reject_membership"
                     phx-value-id={req.id}
-                    class="px-2.5 py-1 bg-red-500 text-white rounded text-xs hover:bg-red-600"
+                    class="btn btn-error btn-xs"
                   >
                     Rechazar
                   </button>
@@ -652,27 +626,32 @@ defmodule NotiOsw4lWeb.WorkspaceShowLive do
           <div class="mb-6 flex flex-wrap gap-1.5">
             <span
               :for={m <- @members}
-              class="inline-flex items-center px-2.5 py-1 bg-zinc-100 rounded-full text-xs font-medium"
+              class={"inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium " <> if(MapSet.member?(@online_member_ids, m.user.id), do: "bg-base-200", else: "bg-base-200/50 text-base-content/40")}
             >
-              <span class="w-2 h-2 rounded-full bg-green-400 mr-1.5"></span>
+              <span class={"w-2 h-2 rounded-full mr-1.5 " <> if(MapSet.member?(@online_member_ids, m.user.id), do: "bg-green-400", else: "bg-base-content/20")}>
+              </span>
               {m.user.username}
-              <span class="text-zinc-400 ml-1">{m.role}</span>
+              <span class={"ml-1 " <> if(MapSet.member?(@online_member_ids, m.user.id), do: "text-base-content/40", else: "text-base-content/30")}>
+                {m.role}
+              </span>
             </span>
           </div>
 
           <%!-- Notes Section --%>
           <div>
             <div class="flex items-center justify-between mb-4">
-              <h2 class="text-sm font-semibold text-zinc-500 uppercase tracking-wide">Notas</h2>
+              <h2 class="text-sm font-semibold text-base-content/50 uppercase tracking-wide">
+                Notas
+              </h2>
               <button
                 phx-click="toggle_note_form"
-                class="text-xs px-3 py-1.5 rounded-lg bg-zinc-900 text-white hover:bg-zinc-700 transition-colors"
+                class="text-xs px-3 py-1.5 rounded-lg bg-primary text-primary-content hover:brightness-110 transition-colors"
               >
                 {if @show_note_form, do: "Cancelar", else: "+ Nueva"}
               </button>
             </div>
 
-            <div :if={@show_note_form} class="mb-4 p-4 bg-zinc-50 rounded-lg border">
+            <div :if={@show_note_form} class="mb-4 p-4 bg-base-200 rounded-lg border border-base-300">
               <.form for={@note_form} phx-submit="create_note" class="space-y-3">
                 <.input field={@note_form[:title]} type="text" label="Título" required />
                 <.input field={@note_form[:content]} type="textarea" label="Contenido" />
@@ -680,17 +659,19 @@ defmodule NotiOsw4lWeb.WorkspaceShowLive do
               </.form>
             </div>
 
-            <div :if={@notes == []} class="text-center py-12 text-zinc-400 text-sm">
+            <div :if={@notes == []} class="text-center py-12 text-base-content/40 text-sm">
               No hay notas aún
             </div>
 
             <div class="space-y-3">
-              <div :for={note <- @notes} class="border rounded-lg p-4 bg-white">
+              <div :for={note <- @notes} class="border border-base-300 rounded-lg p-4 bg-base-100">
                 <div class="flex items-center justify-between mb-3">
                   <div>
                     <h3 class="font-semibold">{note.title}</h3>
-                    <p :if={note.content} class="text-sm text-zinc-500 mt-0.5">{note.content}</p>
-                    <p :if={note.created_by} class="text-xs text-zinc-400 mt-0.5">
+                    <p :if={note.content} class="text-sm text-base-content/50 mt-0.5">
+                      {note.content}
+                    </p>
+                    <p :if={note.created_by} class="text-xs text-base-content/40 mt-0.5">
                       por {note.created_by.username}
                     </p>
                   </div>
@@ -698,7 +679,7 @@ defmodule NotiOsw4lWeb.WorkspaceShowLive do
                     phx-click="delete_note"
                     phx-value-id={note.id}
                     data-confirm="¿Eliminar esta nota y todas sus tareas?"
-                    class="text-red-400 hover:text-red-600 text-xs"
+                    class="text-error/60 hover:text-error text-xs"
                   >
                     Eliminar
                   </button>
@@ -706,28 +687,16 @@ defmodule NotiOsw4lWeb.WorkspaceShowLive do
 
                 <%!-- Tasks --%>
                 <div class="space-y-1.5">
-                  <div :for={task <- note.tasks} class="flex items-start gap-3 group py-1">
-                    <button
+                  <div :for={task <- note.tasks} class="flex items-start gap-3 group py-1.5">
+                    <input
+                      type="checkbox"
+                      checked={task.completed}
                       phx-click="toggle_task"
                       phx-value-id={task.id}
-                      class="mt-0.5 relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none"
-                      style={
-                        if task.completed,
-                          do: "background-color: #22c55e",
-                          else: "background-color: #d1d5db"
-                      }
-                    >
-                      <span
-                        class="pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out"
-                        style={
-                          if task.completed,
-                            do: "transform: translateX(1rem)",
-                            else: "transform: translateX(0)"
-                        }
-                      />
-                    </button>
+                      class="checkbox checkbox-success checkbox-sm mt-0.5"
+                    />
                     <div class="flex-1 min-w-0">
-                      <p class={"text-sm #{if task.completed, do: "line-through text-zinc-400", else: "text-zinc-900"}"}>
+                      <p class={"text-sm #{if task.completed, do: "line-through text-base-content/40", else: "text-base-content"}"}>
                         {task.title}
                       </p>
 
@@ -752,7 +721,7 @@ defmodule NotiOsw4lWeb.WorkspaceShowLive do
                           </button>
                           <button
                             phx-click="cancel_edit_description"
-                            class="text-xs text-zinc-400 hover:underline"
+                            class="text-xs text-base-content/40 hover:underline"
                           >
                             Cancelar
                           </button>
@@ -762,7 +731,7 @@ defmodule NotiOsw4lWeb.WorkspaceShowLive do
                       <div :if={@editing_task != task.id}>
                         <p
                           :if={task.description && task.description != ""}
-                          class="text-xs text-zinc-500 mt-0.5"
+                          class="text-xs text-base-content/50 mt-0.5"
                         >
                           {task.description}
                         </p>
@@ -770,7 +739,7 @@ defmodule NotiOsw4lWeb.WorkspaceShowLive do
                           phx-click="edit_task_description"
                           phx-value-id={task.id}
                           phx-value-description={task.description || ""}
-                          class="text-xs text-zinc-300 hover:text-zinc-500 mt-0.5 opacity-0 group-hover:opacity-100 transition-opacity"
+                          class="text-xs text-base-content/30 hover:text-base-content/50 mt-0.5"
                         >
                           {if task.description, do: "editar", else: "+ descripción"}
                         </button>
@@ -786,7 +755,7 @@ defmodule NotiOsw4lWeb.WorkspaceShowLive do
                     <button
                       phx-click="delete_task"
                       phx-value-id={task.id}
-                      class="text-red-300 hover:text-red-500 text-xs opacity-0 group-hover:opacity-100 transition-opacity"
+                      class="text-error/40 hover:text-error text-xs"
                     >
                       x
                     </button>
@@ -799,15 +768,10 @@ defmodule NotiOsw4lWeb.WorkspaceShowLive do
                     type="text"
                     name="title"
                     placeholder="Nueva tarea..."
-                    class="flex-1 text-sm border rounded-lg px-3 py-1.5 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                    class="input input-bordered input-sm flex-1"
                     autocomplete="off"
                   />
-                  <button
-                    type="submit"
-                    class="px-3 py-1.5 bg-zinc-900 text-white rounded-lg text-sm hover:bg-zinc-700"
-                  >
-                    +
-                  </button>
+                  <button type="submit" class="btn btn-primary btn-sm">+</button>
                 </form>
               </div>
             </div>
@@ -818,38 +782,35 @@ defmodule NotiOsw4lWeb.WorkspaceShowLive do
       <%!-- Right sidebar --%>
       <div
         :if={@right_panel != nil}
-        class="w-80 border-l border-zinc-200 bg-zinc-50 flex flex-col shrink-0"
+        class="w-80 border-l border-base-300 bg-base-200/50 flex flex-col shrink-0"
       >
         <%!-- Chat Panel --%>
         <div :if={@right_panel == "chat"} class="flex flex-col h-full">
-          <div class="px-4 py-3 border-b border-zinc-200 bg-white">
+          <div class="px-4 py-3 border-b border-base-300 bg-base-100">
             <h3 class="font-semibold text-sm">Chat</h3>
           </div>
           <div class="flex-1 overflow-y-auto p-3 space-y-2" id="chat-messages" phx-hook="ChatScroll">
             <div :for={msg <- @messages} class="text-sm">
-              <span class="font-semibold text-zinc-700">{msg.user.username}</span>
-              <span class="text-zinc-500 text-xs ml-1">
+              <span class="font-semibold text-base-content/70">{msg.user.username}</span>
+              <span class="text-base-content/50 text-xs ml-1">
                 {Calendar.strftime(msg.inserted_at, "%H:%M")}
               </span>
-              <p class="text-zinc-600 text-sm mt-0.5">{msg.body}</p>
+              <p class="text-base-content/60 text-sm mt-0.5">{msg.body}</p>
             </div>
-            <p :if={@messages == []} class="text-center text-zinc-400 text-xs py-8">
+            <p :if={@messages == []} class="text-center text-base-content/40 text-xs py-8">
               Sin mensajes aún
             </p>
           </div>
-          <form phx-submit="send_message" class="border-t border-zinc-200 p-3 bg-white">
+          <form phx-submit="send_message" class="border-t border-base-300 p-3 bg-base-100">
             <div class="flex gap-2">
               <input
                 type="text"
                 name="body"
                 placeholder="Escribe un mensaje..."
-                class="flex-1 text-sm border rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                class="input input-bordered input-sm flex-1"
                 autocomplete="off"
               />
-              <button
-                type="submit"
-                class="px-3 py-2 bg-blue-500 text-white rounded-lg text-sm hover:bg-blue-600"
-              >
+              <button type="submit" class="btn btn-info btn-sm btn-square">
                 <svg
                   xmlns="http://www.w3.org/2000/svg"
                   class="h-4 w-4"
@@ -865,109 +826,84 @@ defmodule NotiOsw4lWeb.WorkspaceShowLive do
 
         <%!-- Voice Panel --%>
         <div :if={@right_panel == "voice"} class="flex flex-col h-full">
-          <div class="px-4 py-3 border-b border-zinc-200 bg-white flex items-center justify-between">
+          <div class="px-4 py-3 border-b border-base-300 bg-base-100 flex items-center justify-between">
             <h3 class="font-semibold text-sm">Voz</h3>
             <span :if={@in_call} class="text-xs text-green-600 font-medium flex items-center gap-1">
               <span class="w-2 h-2 bg-green-500 rounded-full animate-pulse"></span> Conectado
             </span>
           </div>
 
-          <div class="flex-1 overflow-y-auto p-3">
-            <%!-- Your video --%>
-            <div :if={@in_call && @publishing} class="mb-3">
-              <div class="rounded-lg overflow-hidden bg-zinc-900 aspect-video relative">
-                <LiveExWebRTC.Publisher.live_render socket={@socket} publisher={@publisher} />
-                <div class="absolute bottom-1 left-1 bg-black/60 text-white text-[10px] px-1.5 py-0.5 rounded">
-                  Tu ({@current_user.username})
+          <div class="flex-1 overflow-y-auto p-4">
+            <%!-- Your avatar when in call --%>
+            <div :if={@in_call} class="flex flex-col items-center mb-4">
+              <div class="relative">
+                <div class="w-16 h-16 rounded-full bg-green-500 flex items-center justify-center text-white text-xl font-bold animate-pulse">
+                  {String.first(@current_user.username) |> String.upcase()}
                 </div>
+                <span class="absolute -bottom-1 -right-1 w-4 h-4 bg-green-400 rounded-full border-2 border-base-100">
+                </span>
               </div>
+              <span class="text-xs font-medium mt-2">{@current_user.username} (tú)</span>
             </div>
 
-            <%!-- Participants --%>
-            <div class="space-y-2">
+            <%!-- Other participants --%>
+            <div class="flex flex-wrap justify-center gap-4">
               <div
                 :for={participant <- @call_participants}
-                class="rounded-lg bg-white border p-2"
+                class="flex flex-col items-center"
               >
-                <div
-                  :if={Map.has_key?(@players, to_string(participant.user_id))}
-                  class="rounded-lg overflow-hidden bg-zinc-900 aspect-video relative mb-1"
-                >
-                  <LiveExWebRTC.Player.live_render
-                    socket={@socket}
-                    player={@players[to_string(participant.user_id)]}
-                  />
-                </div>
-                <div class="flex items-center justify-between">
-                  <span class="text-xs font-medium flex items-center gap-1.5">
-                    <span class="w-2 h-2 bg-green-400 rounded-full"></span>
-                    {participant.username}
+                <div class="relative">
+                  <div class="w-16 h-16 rounded-full bg-blue-500 flex items-center justify-center text-white text-xl font-bold animate-pulse">
+                    {String.first(participant.username) |> String.upcase()}
+                  </div>
+                  <span class="absolute -bottom-1 -right-1 w-4 h-4 bg-green-400 rounded-full border-2 border-base-100">
                   </span>
-                  <button
-                    :if={
-                      participant.publishing &&
-                        !Map.has_key?(@players, to_string(participant.user_id))
-                    }
-                    phx-click="watch_stream"
-                    phx-value-user-id={participant.user_id}
-                    class="text-[10px] px-2 py-0.5 bg-blue-500 text-white rounded hover:bg-blue-600"
-                  >
-                    Ver
-                  </button>
                 </div>
+                <span class="text-xs font-medium mt-2">{participant.username}</span>
               </div>
             </div>
 
             <p
               :if={@call_participants == [] && @in_call}
-              class="text-center text-zinc-400 text-xs py-4"
+              class="text-center text-base-content/40 text-xs py-4"
             >
               Esperando a otros...
+            </p>
+
+            <p
+              :if={!@in_call}
+              class="text-center text-base-content/40 text-xs py-8"
+            >
+              Únete al canal de voz
             </p>
           </div>
 
           <%!-- Call controls --%>
-          <div class="border-t border-zinc-200 p-3 bg-white">
+          <div class="border-t border-base-300 p-3 bg-base-100">
             <button
               :if={!@in_call}
               phx-click="join_call"
-              class="w-full py-2 bg-green-500 text-white rounded-lg text-sm font-medium hover:bg-green-600 transition-colors flex items-center justify-center gap-2"
+              class="btn btn-success btn-sm w-full gap-2"
             >
-              <svg
-                xmlns="http://www.w3.org/2000/svg"
-                class="h-4 w-4"
-                viewBox="0 0 20 20"
-                fill="currentColor"
-              >
-                <path d="M2 3a1 1 0 011-1h2.153a1 1 0 01.986.836l.74 4.435a1 1 0 01-.54 1.06l-1.548.773a11.037 11.037 0 006.105 6.105l.774-1.548a1 1 0 011.059-.54l4.435.74a1 1 0 01.836.986V17a1 1 0 01-1 1h-2C7.82 18 2 12.18 2 5V3z" />
-              </svg>
-              Unirse a voz
+              <.icon name="hero-phone" class="h-4 w-4" /> Unirse a voz
             </button>
             <button
               :if={@in_call}
               phx-click="leave_call"
-              class="w-full py-2 bg-red-500 text-white rounded-lg text-sm font-medium hover:bg-red-600 transition-colors flex items-center justify-center gap-2"
+              class="btn btn-error btn-sm w-full gap-2"
             >
-              <svg
-                xmlns="http://www.w3.org/2000/svg"
-                class="h-4 w-4"
-                viewBox="0 0 20 20"
-                fill="currentColor"
-              >
-                <path d="M2 3a1 1 0 011-1h2.153a1 1 0 01.986.836l.74 4.435a1 1 0 01-.54 1.06l-1.548.773a11.037 11.037 0 006.105 6.105l.774-1.548a1 1 0 011.059-.54l4.435.74a1 1 0 01.836.986V17a1 1 0 01-1 1h-2C7.82 18 2 12.18 2 5V3z" />
-              </svg>
-              Desconectar
+              <.icon name="hero-phone-x-mark" class="h-4 w-4" /> Desconectar
             </button>
           </div>
         </div>
       </div>
 
       <%!-- Invite Modal --%>
-      <div :if={@show_invite} class="fixed inset-0 z-40 flex items-center justify-center bg-black/50">
-        <div class="bg-white rounded-lg shadow-xl p-6 w-96 max-h-96">
+      <div :if={@show_invite} class="modal modal-open">
+        <div class="modal-box">
           <div class="flex items-center justify-between mb-4">
-            <h3 class="text-lg font-semibold">Invitar Usuario</h3>
-            <button phx-click="toggle_invite" class="text-zinc-400 hover:text-zinc-600">x</button>
+            <h3 class="text-lg font-bold">Invitar Usuario</h3>
+            <button phx-click="toggle_invite" class="btn btn-ghost btn-sm btn-circle">x</button>
           </div>
           <input
             type="text"
@@ -975,35 +911,36 @@ defmodule NotiOsw4lWeb.WorkspaceShowLive do
             phx-value-query={@invite_query}
             value={@invite_query}
             placeholder="Buscar por usuario o email..."
-            class="w-full border rounded-lg px-3 py-2 text-sm mb-3"
+            class="input input-bordered w-full mb-3"
             autocomplete="off"
             name="query"
           />
           <div class="space-y-2 max-h-48 overflow-y-auto">
             <div
               :for={user <- @invite_results}
-              class="flex items-center justify-between p-2 hover:bg-zinc-50 rounded"
+              class="flex items-center justify-between p-2 hover:bg-base-200 rounded-lg"
             >
               <div>
                 <span class="font-medium text-sm">{user.username}</span>
-                <span class="text-xs text-zinc-400 ml-2">{user.email}</span>
+                <span class="text-xs text-base-content/40 ml-2">{user.email}</span>
               </div>
               <button
                 phx-click="invite_user"
                 phx-value-user_id={user.id}
-                class="px-2 py-1 bg-blue-500 text-white rounded text-xs hover:bg-blue-600"
+                class="btn btn-info btn-xs"
               >
                 Invitar
               </button>
             </div>
             <p
               :if={@invite_results == [] && String.length(@invite_query) >= 2}
-              class="text-sm text-zinc-400 text-center py-2"
+              class="text-sm text-base-content/40 text-center py-2"
             >
               No se encontraron usuarios
             </p>
           </div>
         </div>
+        <div class="modal-backdrop" phx-click="toggle_invite"></div>
       </div>
     </div>
     """

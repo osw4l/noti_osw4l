@@ -33,6 +33,18 @@ defmodule NotiOsw4lWeb.UserAuth do
     socket = mount_current_user(socket, session)
 
     if socket.assigns.current_user do
+      if Phoenix.LiveView.connected?(socket) do
+        user = socket.assigns.current_user
+
+        NotiOsw4lWeb.Presence.track(self(), "platform:presence", to_string(user.id), %{
+          username: user.username,
+          user_id: user.id,
+          workspace_id: nil,
+          workspace_name: nil,
+          joined_at: DateTime.utc_now()
+        })
+      end
+
       {:cont, socket}
     else
       {:halt, Phoenix.LiveView.redirect(socket, to: ~p"/login")}

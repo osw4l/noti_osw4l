@@ -67,8 +67,7 @@ defmodule NotiOsw4l.MixProject do
       {:dns_cluster, "~> 0.2.0"},
       {:bandit, "~> 1.5"},
       {:bcrypt_elixir, "~> 3.0"},
-      {:oban, "~> 2.19"},
-      {:live_ex_webrtc, "~> 0.8.0"}
+      {:oban, "~> 2.19"}
     ]
   end
 

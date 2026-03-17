@@ -5,7 +5,6 @@
 @source "../css";
 @source "../js";
 @source "../../lib/noti_osw4l_web";
-@source "../../deps/live_ex_webrtc";
 
 /* A Tailwind plugin that makes "hero-#{ICON}" classes available.
    The heroicons installation itself is managed by your mix.exs */
