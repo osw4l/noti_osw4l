@@ -98,6 +98,15 @@ defmodule NotiOsw4lWeb.WorkspaceListLive do
      )}
   end
 
+  def handle_info({:new_notification, _notification}, socket) do
+    send_update(NotiOsw4lWeb.NotificationBellComponent,
+      id: "notification-bell",
+      current_user: socket.assigns.current_user
+    )
+
+    {:noreply, socket}
+  end
+
   def handle_info(_msg, socket), do: {:noreply, socket}
 
   defp online_user_ids do
@@ -239,6 +248,9 @@ defmodule NotiOsw4lWeb.WorkspaceListLive do
                 <div class="min-w-0 flex-1">
                   <p class={"text-sm truncate " <> if(MapSet.member?(@online_ids, user.id), do: "font-medium", else: "text-base-content/40")}>
                     {user.username}
+                  </p>
+                  <p class="text-[10px] text-base-content/30 truncate">
+                    {user.email}
                   </p>
                   <p
                     :if={

@@ -43,6 +43,8 @@ defmodule NotiOsw4lWeb.UserAuth do
           workspace_name: nil,
           joined_at: DateTime.utc_now()
         })
+
+        Phoenix.PubSub.subscribe(NotiOsw4l.PubSub, "notifications:#{user.id}")
       end
 
       {:cont, socket}

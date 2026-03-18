@@ -2,6 +2,7 @@ defmodule NotiOsw4l.Workspaces do
   import Ecto.Query
   alias NotiOsw4l.Repo
   alias NotiOsw4l.Workspaces.{Workspace, Membership}
+  alias NotiOsw4l.Notifications
 
   def list_workspaces_for_user(user_id) do
     from(w in Workspace,
@@ -73,38 +74,116 @@ defmodule NotiOsw4l.Workspaces do
   end
 
   def invite_user(workspace_id, user_id, invited_by_id) do
-    %Membership{}
-    |> Membership.changeset(%{
-      workspace_id: workspace_id,
-      user_id: user_id,
-      invited_by_id: invited_by_id,
-      role: "member",
-      status: "pending"
-    })
-    |> Repo.insert()
+    result =
+      %Membership{}
+      |> Membership.changeset(%{
+        workspace_id: workspace_id,
+        user_id: user_id,
+        invited_by_id: invited_by_id,
+        role: "member",
+        status: "pending"
+      })
+      |> Repo.insert()
+
+    case result do
+      {:ok, _membership} ->
+        workspace = Repo.get!(Workspace, workspace_id)
+        inviter = NotiOsw4l.Accounts.get_user!(invited_by_id)
+
+        Notifications.notify(
+          user_id,
+          "invite",
+          "Invitacion a #{workspace.name}",
+          "#{inviter.username} te invito a su espacio de trabajo"
+        )
+
+      _ ->
+        :ok
+    end
+
+    result
   end
 
   def request_access(workspace_id, user_id) do
-    %Membership{}
-    |> Membership.changeset(%{
-      workspace_id: workspace_id,
-      user_id: user_id,
-      role: "member",
-      status: "pending"
-    })
-    |> Repo.insert()
+    result =
+      %Membership{}
+      |> Membership.changeset(%{
+        workspace_id: workspace_id,
+        user_id: user_id,
+        role: "member",
+        status: "pending"
+      })
+      |> Repo.insert()
+
+    case result do
+      {:ok, _membership} ->
+        workspace = Repo.get!(Workspace, workspace_id) |> Repo.preload(:owner)
+        requester = NotiOsw4l.Accounts.get_user!(user_id)
+
+        Notifications.notify(
+          workspace.owner_id,
+          "access_request",
+          "Solicitud de acceso",
+          "#{requester.username} solicita acceso a #{workspace.name}"
+        )
+
+      _ ->
+        :ok
+    end
+
+    result
   end
 
   def accept_membership(membership_id) do
-    Repo.get!(Membership, membership_id)
-    |> Membership.accept_changeset()
-    |> Repo.update()
+    membership = Repo.get!(Membership, membership_id) |> Repo.preload(:user)
+
+    result =
+      membership
+      |> Membership.accept_changeset()
+      |> Repo.update()
+
+    case result do
+      {:ok, _} ->
+        workspace = Repo.get!(Workspace, membership.workspace_id)
+
+        Notifications.notify(
+          membership.user_id,
+          "access_accepted",
+          "Acceso aprobado",
+          "Tu solicitud a #{workspace.name} fue aceptada"
+        )
+
+      _ ->
+        :ok
+    end
+
+    result
   end
 
   def reject_membership(membership_id) do
-    Repo.get!(Membership, membership_id)
-    |> Membership.reject_changeset()
-    |> Repo.update()
+    membership = Repo.get!(Membership, membership_id) |> Repo.preload(:user)
+
+    result =
+      membership
+      |> Membership.reject_changeset()
+      |> Repo.update()
+
+    case result do
+      {:ok, _} ->
+        workspace = Repo.get!(Workspace, membership.workspace_id)
+
+        Notifications.notify(
+          membership.user_id,
+          "access_rejected",
+          "Acceso denegado",
+          "Tu solicitud a #{workspace.name} fue rechazada"
+        )
+
+      _ ->
+        :ok
+    end
+
+    result
   end
 
   def pending_requests(workspace_id) do

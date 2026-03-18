@@ -410,6 +410,15 @@ defmodule NotiOsw4lWeb.WorkspaceShowLive do
     {:noreply, put_flash(socket, :info, "#{username} ha solicitado acceso a este espacio")}
   end
 
+  def handle_info({:new_notification, _notification}, socket) do
+    send_update(NotiOsw4lWeb.NotificationBellComponent,
+      id: "notification-bell",
+      current_user: socket.assigns.current_user
+    )
+
+    {:noreply, socket}
+  end
+
   def handle_info(_msg, socket), do: {:noreply, socket}
 
   # ── Helpers ──

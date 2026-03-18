@@ -33,6 +33,17 @@ defmodule NotiOsw4lWeb.BrowseWorkspacesLive do
     end
   end
 
+  def handle_info({:new_notification, _notification}, socket) do
+    send_update(NotiOsw4lWeb.NotificationBellComponent,
+      id: "notification-bell",
+      current_user: socket.assigns.current_user
+    )
+
+    {:noreply, socket}
+  end
+
+  def handle_info(_msg, socket), do: {:noreply, socket}
+
   defp list_other_workspaces(user_id) do
     # IDs of workspaces the user already belongs to or owns
     member_workspace_ids =

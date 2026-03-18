@@ -105,6 +105,13 @@ window.addEventListener("phx:notify_chat", (e) => {
   showBrowserNotification("Nuevo mensaje", e.detail.message || "Tienes un nuevo mensaje")
 })
 
+// Notification bell sound
+window.addEventListener("phx:play_notification_sound", (e) => {
+  const type = e.detail.type || "chat"
+  playNotificationSound(type === "call" ? "call" : "chat")
+  showBrowserNotification("Nueva notificación", e.detail.title || "Tienes una nueva notificación")
+})
+
 // Request notification permission on page load
 if ("Notification" in window && Notification.permission === "default") {
   Notification.requestPermission()

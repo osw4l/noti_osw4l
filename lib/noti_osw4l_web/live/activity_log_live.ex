@@ -64,6 +64,17 @@ defmodule NotiOsw4lWeb.ActivityLogLive do
     """
   end
 
+  def handle_info({:new_notification, _notification}, socket) do
+    send_update(NotiOsw4lWeb.NotificationBellComponent,
+      id: "notification-bell",
+      current_user: socket.assigns.current_user
+    )
+
+    {:noreply, socket}
+  end
+
+  def handle_info(_msg, socket), do: {:noreply, socket}
+
   defp action_color("created"), do: "bg-success"
   defp action_color("deleted"), do: "bg-error"
   defp action_color("completed"), do: "bg-info"

@@ -46,7 +46,12 @@ defmodule NotiOsw4lWeb.Layouts do
             </.link>
           </div>
         </div>
-        <div :if={@current_user} class="flex items-center gap-4 text-sm">
+        <div :if={@current_user} class="flex items-center gap-3 text-sm">
+          <.live_component
+            module={NotiOsw4lWeb.NotificationBellComponent}
+            id="notification-bell"
+            current_user={@current_user}
+          />
           <span class="text-neutral-content/60">{@current_user.username}</span>
           <.link href={~p"/logout"} method="delete" class="hover:text-neutral-content/70">
             Salir
