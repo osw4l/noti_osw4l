@@ -324,7 +324,7 @@ defmodule NotiOsw4lWeb.WorkspaceShowLive do
     {:noreply, socket}
   end
 
-  # ── Voice/Video ──
+  # ── Voice/Video (WebRTC) ──
 
   def handle_event("join_call", _params, socket) do
     user_id = socket.assigns.current_user.id
@@ -342,14 +342,70 @@ defmodule NotiOsw4lWeb.WorkspaceShowLive do
       {:user_joined_call, username}
     )
 
-    {:noreply, assign(socket, in_call: true, right_panel: "voice")}
+    # Tell JS to start WebRTC with existing participants
+    existing_peers =
+      socket.assigns.call_topic
+      |> Presence.list()
+      |> Enum.map(fn {uid_str, %{metas: [meta | _]}} ->
+        %{user_id: String.to_integer(uid_str), username: meta.username}
+      end)
+      |> Enum.reject(&(&1.user_id == user_id))
+
+    {:noreply,
+     socket
+     |> assign(in_call: true)
+     |> push_event("webrtc_start", %{user_id: user_id, peers: existing_peers})}
   end
 
   def handle_event("leave_call", _params, socket) do
     user_id = socket.assigns.current_user.id
     Presence.untrack(self(), socket.assigns.call_topic, to_string(user_id))
 
-    {:noreply, assign(socket, in_call: false, call_participants: [])}
+    {:noreply,
+     socket
+     |> assign(in_call: false, call_participants: [])
+     |> push_event("webrtc_stop", %{})}
+  end
+
+  # ── WebRTC signaling ──
+
+  def handle_event("webrtc_offer", %{"to" => to_id, "offer" => offer}, socket) do
+    from_id = socket.assigns.current_user.id
+    to_id = if is_binary(to_id), do: String.to_integer(to_id), else: to_id
+
+    Phoenix.PubSub.broadcast(
+      NotiOsw4l.PubSub,
+      socket.assigns.call_topic,
+      {:webrtc_offer, from_id, to_id, offer}
+    )
+
+    {:noreply, socket}
+  end
+
+  def handle_event("webrtc_answer", %{"to" => to_id, "answer" => answer}, socket) do
+    from_id = socket.assigns.current_user.id
+    to_id = if is_binary(to_id), do: String.to_integer(to_id), else: to_id
+
+    Phoenix.PubSub.broadcast(
+      NotiOsw4l.PubSub,
+      socket.assigns.call_topic,
+      {:webrtc_answer, from_id, to_id, answer}
+    )
+
+    {:noreply, socket}
+  end
+
+  def handle_event("webrtc_ice", %{"to" => to_id, "candidate" => candidate}, socket) do
+    from_id = socket.assigns.current_user.id
+    to_id = if is_binary(to_id), do: String.to_integer(to_id), else: to_id
+
+    Phoenix.PubSub.broadcast(
+      NotiOsw4l.PubSub,
+      socket.assigns.call_topic,
+      {:webrtc_ice, from_id, to_id, candidate}
+    )
+
+    {:noreply, socket}
   end
 
   # ── PubSub handlers ──
@@ -378,6 +434,31 @@ defmodule NotiOsw4lWeb.WorkspaceShowLive do
        socket
        |> push_event("notify_call", %{message: "#{username} se unió al canal de voz"})
        |> put_flash(:info, "#{username} se unió al canal de voz")}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  # WebRTC signaling relay
+  def handle_info({:webrtc_offer, from_id, to_id, offer}, socket) do
+    if to_id == socket.assigns.current_user.id do
+      {:noreply, push_event(socket, "webrtc_offer", %{from: from_id, offer: offer})}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  def handle_info({:webrtc_answer, from_id, to_id, answer}, socket) do
+    if to_id == socket.assigns.current_user.id do
+      {:noreply, push_event(socket, "webrtc_answer", %{from: from_id, answer: answer})}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  def handle_info({:webrtc_ice, from_id, to_id, candidate}, socket) do
+    if to_id == socket.assigns.current_user.id do
+      {:noreply, push_event(socket, "webrtc_ice", %{from: from_id, candidate: candidate})}
     else
       {:noreply, socket}
     end
@@ -475,9 +556,19 @@ defmodule NotiOsw4lWeb.WorkspaceShowLive do
 
   # ── Render ──
 
+  defp all_call_participants(call_topic) do
+    call_topic
+    |> Presence.list()
+    |> Enum.map(fn {uid_str, %{metas: [meta | _]}} ->
+      %{user_id: String.to_integer(uid_str), username: meta.username}
+    end)
+  end
+
   def render(assigns) do
+    assigns = assign(assigns, :all_in_call, all_call_participants(assigns.call_topic))
+
     ~H"""
-    <div class="flex h-[calc(100vh-4rem)]" id="workspace-area" phx-hook="CursorTracker">
+    <div class="flex flex-col h-[calc(100vh-4rem)]" id="workspace-area" phx-hook="WebRTCAudio">
       <%!-- Remote cursors --%>
       <div
         :for={cursor <- @cursors}
@@ -495,417 +586,390 @@ defmodule NotiOsw4lWeb.WorkspaceShowLive do
         </span>
       </div>
 
-      <%!-- Main content area --%>
-      <div class="flex-1 overflow-y-auto">
-        <div class="max-w-3xl mx-auto px-4 py-6">
-          <%!-- Header --%>
-          <div class="flex items-center justify-between mb-6">
-            <div>
-              <.link
-                navigate={~p"/workspaces"}
-                class="text-sm text-base-content/50 hover:text-base-content/70"
-              >
-                &larr; Volver
-              </.link>
-              <h1 class="text-2xl font-bold mt-1">{@workspace.name}</h1>
-              <p :if={@workspace.description} class="text-base-content/50 text-sm">
-                {@workspace.description}
-              </p>
-            </div>
-            <div class="flex items-center gap-1">
-              <.link
-                navigate={~p"/workspaces/#{@workspace.id}/activity"}
-                class="btn btn-ghost btn-sm text-xs"
-              >
-                Actividad
-              </.link>
-              <button
-                phx-click="show_panel"
-                phx-value-panel="voice"
-                class={"p-2 rounded-lg transition-colors " <> if(@right_panel == "voice", do: "bg-success/10 text-success", else: "text-base-content/50 hover:bg-base-200")}
-                title="Voz"
-              >
-                <svg
-                  xmlns="http://www.w3.org/2000/svg"
-                  class="h-5 w-5"
-                  viewBox="0 0 20 20"
-                  fill="currentColor"
+      <%!-- Main layout --%>
+      <div class="flex flex-1 overflow-hidden">
+        <%!-- Main content area --%>
+        <div class="flex-1 overflow-y-auto" id="main-scroll" phx-hook="CursorTracker">
+          <div class="max-w-3xl mx-auto px-4 py-6">
+            <%!-- Header --%>
+            <div class="flex items-center justify-between mb-6">
+              <div>
+                <.link
+                  navigate={~p"/workspaces"}
+                  class="text-sm text-base-content/50 hover:text-base-content/70"
                 >
-                  <path d="M2 3a1 1 0 011-1h2.153a1 1 0 01.986.836l.74 4.435a1 1 0 01-.54 1.06l-1.548.773a11.037 11.037 0 006.105 6.105l.774-1.548a1 1 0 011.059-.54l4.435.74a1 1 0 01.836.986V17a1 1 0 01-1 1h-2C7.82 18 2 12.18 2 5V3z" />
-                </svg>
-                <span
-                  :if={@in_call}
-                  class="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 bg-green-500 rounded-full border-2 border-base-100"
+                  &larr; Volver
+                </.link>
+                <h1 class="text-2xl font-bold mt-1">{@workspace.name}</h1>
+                <p :if={@workspace.description} class="text-base-content/50 text-sm">
+                  {@workspace.description}
+                </p>
+              </div>
+              <div class="flex items-center gap-1">
+                <.link
+                  navigate={~p"/workspaces/#{@workspace.id}/activity"}
+                  class="btn btn-ghost btn-sm text-xs"
                 >
-                </span>
-              </button>
-              <button
-                phx-click="show_panel"
-                phx-value-panel="chat"
-                class={"p-2 rounded-lg transition-colors " <> if(@right_panel == "chat", do: "bg-info/10 text-info", else: "text-base-content/50 hover:bg-base-200")}
-                title="Chat"
-              >
-                <svg
-                  xmlns="http://www.w3.org/2000/svg"
-                  class="h-5 w-5"
-                  viewBox="0 0 20 20"
-                  fill="currentColor"
+                  Actividad
+                </.link>
+                <button
+                  phx-click="show_panel"
+                  phx-value-panel="chat"
+                  class={"p-2 rounded-lg transition-colors " <> if(@right_panel == "chat", do: "bg-info/10 text-info", else: "text-base-content/50 hover:bg-base-200")}
+                  title="Chat"
                 >
-                  <path
-                    fill-rule="evenodd"
-                    d="M18 10c0 3.866-3.582 7-8 7a8.841 8.841 0 01-4.083-.98L2 17l1.338-3.123C2.493 12.767 2 11.434 2 10c0-3.866 3.582-7 8-7s8 3.134 8 7zM7 9H5v2h2V9zm8 0h-2v2h2V9zM9 9h2v2H9V9z"
-                    clip-rule="evenodd"
-                  />
-                </svg>
-              </button>
-              <button
-                :if={@is_owner}
-                phx-click="toggle_invite"
-                class="p-2 rounded-lg text-base-content/50 hover:bg-base-200 transition-colors"
-                title="Invitar"
-              >
-                <svg
-                  xmlns="http://www.w3.org/2000/svg"
-                  class="h-5 w-5"
-                  viewBox="0 0 20 20"
-                  fill="currentColor"
-                >
-                  <path d="M8 9a3 3 0 100-6 3 3 0 000 6zM8 11a6 6 0 016 6H2a6 6 0 016-6zM16 7a1 1 0 10-2 0v1h-1a1 1 0 100 2h1v1a1 1 0 102 0v-1h1a1 1 0 100-2h-1V7z" />
-                </svg>
-              </button>
-              <button
-                :if={@is_owner}
-                phx-click="toggle_edit"
-                class="p-2 rounded-lg text-base-content/50 hover:bg-base-200 transition-colors"
-                title="Editar"
-              >
-                <svg
-                  xmlns="http://www.w3.org/2000/svg"
-                  class="h-5 w-5"
-                  viewBox="0 0 20 20"
-                  fill="currentColor"
-                >
-                  <path d="M13.586 3.586a2 2 0 112.828 2.828l-.793.793-2.828-2.828.793-.793zM11.379 5.793L3 14.172V17h2.828l8.38-8.379-2.83-2.828z" />
-                </svg>
-              </button>
-            </div>
-          </div>
-
-          <%!-- Edit form --%>
-          <div :if={@editing} class="mb-6 p-4 bg-base-200 rounded-lg border border-base-300">
-            <.form for={@form} phx-submit="update" class="space-y-4">
-              <.input field={@form[:name]} type="text" label="Nombre" required />
-              <.input field={@form[:description]} type="textarea" label="Descripción" />
-              <.button type="submit">Guardar</.button>
-            </.form>
-          </div>
-
-          <%!-- Pending Requests --%>
-          <div :if={@is_owner && @pending_requests != []} class="mb-6">
-            <h2 class="text-sm font-semibold text-base-content/50 uppercase tracking-wide mb-3">
-              Solicitudes
-            </h2>
-            <div class="space-y-2">
-              <div
-                :for={req <- @pending_requests}
-                class="alert alert-warning"
-              >
-                <span class="font-medium text-sm">{req.user.username}</span>
-                <div class="space-x-2">
-                  <button
-                    phx-click="accept_membership"
-                    phx-value-id={req.id}
-                    class="btn btn-success btn-xs"
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    class="h-5 w-5"
+                    viewBox="0 0 20 20"
+                    fill="currentColor"
                   >
-                    Aceptar
-                  </button>
-                  <button
-                    phx-click="reject_membership"
-                    phx-value-id={req.id}
-                    class="btn btn-error btn-xs"
+                    <path
+                      fill-rule="evenodd"
+                      d="M18 10c0 3.866-3.582 7-8 7a8.841 8.841 0 01-4.083-.98L2 17l1.338-3.123C2.493 12.767 2 11.434 2 10c0-3.866 3.582-7 8-7s8 3.134 8 7zM7 9H5v2h2V9zm8 0h-2v2h2V9zM9 9h2v2H9V9z"
+                      clip-rule="evenodd"
+                    />
+                  </svg>
+                </button>
+                <button
+                  :if={@is_owner}
+                  phx-click="toggle_invite"
+                  class="p-2 rounded-lg text-base-content/50 hover:bg-base-200 transition-colors"
+                  title="Invitar"
+                >
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    class="h-5 w-5"
+                    viewBox="0 0 20 20"
+                    fill="currentColor"
                   >
-                    Rechazar
-                  </button>
-                </div>
+                    <path d="M8 9a3 3 0 100-6 3 3 0 000 6zM8 11a6 6 0 016 6H2a6 6 0 016-6zM16 7a1 1 0 10-2 0v1h-1a1 1 0 100 2h1v1a1 1 0 102 0v-1h1a1 1 0 100-2h-1V7z" />
+                  </svg>
+                </button>
+                <button
+                  :if={@is_owner}
+                  phx-click="toggle_edit"
+                  class="p-2 rounded-lg text-base-content/50 hover:bg-base-200 transition-colors"
+                  title="Editar"
+                >
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    class="h-5 w-5"
+                    viewBox="0 0 20 20"
+                    fill="currentColor"
+                  >
+                    <path d="M13.586 3.586a2 2 0 112.828 2.828l-.793.793-2.828-2.828.793-.793zM11.379 5.793L3 14.172V17h2.828l8.38-8.379-2.83-2.828z" />
+                  </svg>
+                </button>
               </div>
             </div>
-          </div>
 
-          <%!-- Members bar --%>
-          <div class="mb-6 flex flex-wrap gap-1.5">
-            <span
-              :for={m <- @members}
-              class={"inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium " <> if(MapSet.member?(@online_member_ids, m.user.id), do: "bg-base-200", else: "bg-base-200/50 text-base-content/40")}
-            >
-              <span class={"w-2 h-2 rounded-full mr-1.5 " <> if(MapSet.member?(@online_member_ids, m.user.id), do: "bg-green-400", else: "bg-base-content/20")}>
-              </span>
-              {m.user.username}
-              <span class={"ml-1 " <> if(MapSet.member?(@online_member_ids, m.user.id), do: "text-base-content/40", else: "text-base-content/30")}>
-                {m.role}
-              </span>
-            </span>
-          </div>
-
-          <%!-- Notes Section --%>
-          <div>
-            <div class="flex items-center justify-between mb-4">
-              <h2 class="text-sm font-semibold text-base-content/50 uppercase tracking-wide">
-                Notas
-              </h2>
-              <button
-                phx-click="toggle_note_form"
-                class="text-xs px-3 py-1.5 rounded-lg bg-primary text-primary-content hover:brightness-110 transition-colors"
-              >
-                {if @show_note_form, do: "Cancelar", else: "+ Nueva"}
-              </button>
-            </div>
-
-            <div :if={@show_note_form} class="mb-4 p-4 bg-base-200 rounded-lg border border-base-300">
-              <.form for={@note_form} phx-submit="create_note" class="space-y-3">
-                <.input field={@note_form[:title]} type="text" label="Título" required />
-                <.input field={@note_form[:content]} type="textarea" label="Contenido" />
-                <.button type="submit">Crear</.button>
+            <%!-- Edit form --%>
+            <div :if={@editing} class="mb-6 p-4 bg-base-200 rounded-lg border border-base-300">
+              <.form for={@form} phx-submit="update" class="space-y-4">
+                <.input field={@form[:name]} type="text" label="Nombre" required />
+                <.input field={@form[:description]} type="textarea" label="Descripción" />
+                <.button type="submit">Guardar</.button>
               </.form>
             </div>
 
-            <div :if={@notes == []} class="text-center py-12 text-base-content/40 text-sm">
-              No hay notas aún
-            </div>
-
-            <div class="space-y-3">
-              <div :for={note <- @notes} class="border border-base-300 rounded-lg p-4 bg-base-100">
-                <div class="flex items-center justify-between mb-3">
-                  <div>
-                    <h3 class="font-semibold">{note.title}</h3>
-                    <p :if={note.content} class="text-sm text-base-content/50 mt-0.5">
-                      {note.content}
-                    </p>
-                    <p :if={note.created_by} class="text-xs text-base-content/40 mt-0.5">
-                      por {note.created_by.username}
-                    </p>
-                  </div>
-                  <button
-                    phx-click="delete_note"
-                    phx-value-id={note.id}
-                    data-confirm="¿Eliminar esta nota y todas sus tareas?"
-                    class="text-error/60 hover:text-error text-xs"
-                  >
-                    Eliminar
-                  </button>
-                </div>
-
-                <%!-- Tasks --%>
-                <div class="space-y-1.5">
-                  <div :for={task <- note.tasks} class="flex items-start gap-3 group py-1.5">
-                    <input
-                      type="checkbox"
-                      checked={task.completed}
-                      phx-click="toggle_task"
-                      phx-value-id={task.id}
-                      class="checkbox checkbox-success checkbox-sm mt-0.5"
-                    />
-                    <div class="flex-1 min-w-0">
-                      <p class={"text-sm #{if task.completed, do: "line-through text-base-content/40", else: "text-base-content"}"}>
-                        {task.title}
-                      </p>
-
-                      <div :if={@editing_task == task.id} class="mt-1">
-                        <textarea
-                          phx-blur="save_task_description"
-                          phx-value-id={task.id}
-                          phx-keydown="save_task_description"
-                          phx-key="Enter"
-                          class="w-full text-xs border rounded p-1.5 resize-none"
-                          rows="2"
-                          phx-hook="TaskDescriptionInput"
-                          id={"task-desc-#{task.id}"}
-                        >{@task_description}</textarea>
-                        <div class="flex gap-2 mt-1">
-                          <button
-                            phx-click="save_task_description"
-                            phx-value-id={task.id}
-                            class="text-xs text-blue-600 hover:underline"
-                          >
-                            Guardar
-                          </button>
-                          <button
-                            phx-click="cancel_edit_description"
-                            class="text-xs text-base-content/40 hover:underline"
-                          >
-                            Cancelar
-                          </button>
-                        </div>
-                      </div>
-
-                      <div :if={@editing_task != task.id}>
-                        <p
-                          :if={task.description && task.description != ""}
-                          class="text-xs text-base-content/50 mt-0.5"
-                        >
-                          {task.description}
-                        </p>
-                        <button
-                          phx-click="edit_task_description"
-                          phx-value-id={task.id}
-                          phx-value-description={task.description || ""}
-                          class="text-xs text-base-content/30 hover:text-base-content/50 mt-0.5"
-                        >
-                          {if task.description, do: "editar", else: "+ descripción"}
-                        </button>
-                      </div>
-
-                      <p
-                        :if={task.completed && task.completed_by}
-                        class="text-xs text-green-600 mt-0.5"
-                      >
-                        completada por {task.completed_by.username}
-                      </p>
-                    </div>
+            <%!-- Pending Requests --%>
+            <div :if={@is_owner && @pending_requests != []} class="mb-6">
+              <h2 class="text-sm font-semibold text-base-content/50 uppercase tracking-wide mb-3">
+                Solicitudes
+              </h2>
+              <div class="space-y-2">
+                <div
+                  :for={req <- @pending_requests}
+                  class="alert alert-warning"
+                >
+                  <span class="font-medium text-sm">{req.user.username}</span>
+                  <div class="space-x-2">
                     <button
-                      phx-click="delete_task"
-                      phx-value-id={task.id}
-                      class="text-error/40 hover:text-error text-xs"
+                      phx-click="accept_membership"
+                      phx-value-id={req.id}
+                      class="btn btn-success btn-xs"
                     >
-                      x
+                      Aceptar
+                    </button>
+                    <button
+                      phx-click="reject_membership"
+                      phx-value-id={req.id}
+                      class="btn btn-error btn-xs"
+                    >
+                      Rechazar
                     </button>
                   </div>
                 </div>
-
-                <form phx-submit="add_task" class="mt-3 flex gap-2">
-                  <input type="hidden" name="note_id" value={note.id} />
-                  <input
-                    type="text"
-                    name="title"
-                    placeholder="Nueva tarea..."
-                    class="input input-bordered input-sm flex-1"
-                    autocomplete="off"
-                  />
-                  <button type="submit" class="btn btn-primary btn-sm">+</button>
-                </form>
               </div>
             </div>
-          </div>
-        </div>
-      </div>
 
-      <%!-- Right sidebar --%>
-      <div
-        :if={@right_panel != nil}
-        class="w-80 border-l border-base-300 bg-base-200/50 flex flex-col shrink-0"
-      >
-        <%!-- Chat Panel --%>
-        <div :if={@right_panel == "chat"} class="flex flex-col h-full">
-          <div class="px-4 py-3 border-b border-base-300 bg-base-100">
-            <h3 class="font-semibold text-sm">Chat</h3>
-          </div>
-          <div class="flex-1 overflow-y-auto p-3 space-y-2" id="chat-messages" phx-hook="ChatScroll">
-            <div :for={msg <- @messages} class="text-sm">
-              <span class="font-semibold text-base-content/70">{msg.user.username}</span>
-              <span class="text-base-content/50 text-xs ml-1">
-                {Calendar.strftime(msg.inserted_at, "%H:%M")}
-              </span>
-              <p class="text-base-content/60 text-sm mt-0.5">{msg.body}</p>
-            </div>
-            <p :if={@messages == []} class="text-center text-base-content/40 text-xs py-8">
-              Sin mensajes aún
-            </p>
-          </div>
-          <form phx-submit="send_message" class="border-t border-base-300 p-3 bg-base-100">
-            <div class="flex gap-2">
-              <input
-                type="text"
-                name="body"
-                placeholder="Escribe un mensaje..."
-                class="input input-bordered input-sm flex-1"
-                autocomplete="off"
-              />
-              <button type="submit" class="btn btn-info btn-sm btn-square">
-                <svg
-                  xmlns="http://www.w3.org/2000/svg"
-                  class="h-4 w-4"
-                  viewBox="0 0 20 20"
-                  fill="currentColor"
-                >
-                  <path d="M10.894 2.553a1 1 0 00-1.788 0l-7 14a1 1 0 001.169 1.409l5-1.429A1 1 0 009 15.571V11a1 1 0 112 0v4.571a1 1 0 00.725.962l5 1.428a1 1 0 001.17-1.408l-7-14z" />
-                </svg>
-              </button>
-            </div>
-          </form>
-        </div>
-
-        <%!-- Voice Panel --%>
-        <div :if={@right_panel == "voice"} class="flex flex-col h-full">
-          <div class="px-4 py-3 border-b border-base-300 bg-base-100 flex items-center justify-between">
-            <h3 class="font-semibold text-sm">Voz</h3>
-            <span :if={@in_call} class="text-xs text-green-600 font-medium flex items-center gap-1">
-              <span class="w-2 h-2 bg-green-500 rounded-full animate-pulse"></span> Conectado
-            </span>
-          </div>
-
-          <div class="flex-1 overflow-y-auto p-4">
-            <%!-- Your avatar when in call --%>
-            <div :if={@in_call} class="flex flex-col items-center mb-4">
-              <div class="relative">
-                <div class="w-16 h-16 rounded-full bg-green-500 flex items-center justify-center text-white text-xl font-bold animate-pulse">
-                  {String.first(@current_user.username) |> String.upcase()}
-                </div>
-                <span class="absolute -bottom-1 -right-1 w-4 h-4 bg-green-400 rounded-full border-2 border-base-100">
-                </span>
-              </div>
-              <span class="text-xs font-medium mt-2">{@current_user.username} (tú)</span>
-            </div>
-
-            <%!-- Other participants --%>
-            <div class="flex flex-wrap justify-center gap-4">
-              <div
-                :for={participant <- @call_participants}
-                class="flex flex-col items-center"
+            <%!-- Members bar --%>
+            <div class="mb-6 flex flex-wrap gap-1.5">
+              <span
+                :for={m <- @members}
+                class={"inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium " <> if(MapSet.member?(@online_member_ids, m.user.id), do: "bg-base-200", else: "bg-base-200/50 text-base-content/40")}
               >
-                <div class="relative">
-                  <div class="w-16 h-16 rounded-full bg-blue-500 flex items-center justify-center text-white text-xl font-bold animate-pulse">
-                    {String.first(participant.username) |> String.upcase()}
-                  </div>
-                  <span class="absolute -bottom-1 -right-1 w-4 h-4 bg-green-400 rounded-full border-2 border-base-100">
+                <span class={"w-2 h-2 rounded-full mr-1.5 " <> if(MapSet.member?(@online_member_ids, m.user.id), do: "bg-green-400", else: "bg-base-content/20")}>
+                </span>
+                {m.user.username}
+                <span class={"ml-1 " <> if(MapSet.member?(@online_member_ids, m.user.id), do: "text-base-content/40", else: "text-base-content/30")}>
+                  {m.role}
+                </span>
+              </span>
+            </div>
+
+            <%!-- Voice Call Card --%>
+            <div class="mb-6 border border-base-300 rounded-lg bg-base-100 overflow-hidden">
+              <div class="flex items-center justify-between px-4 py-3 bg-base-200/50">
+                <div class="flex items-center gap-2">
+                  <span class={
+                    "w-2 h-2 rounded-full " <>
+                    if(@all_in_call != [], do: "bg-success animate-pulse", else: "bg-base-content/20")
+                  }>
+                  </span>
+                  <span class="text-sm font-semibold">Canal de Voz</span>
+                  <span :if={@all_in_call != []} class="text-xs text-base-content/50">
+                    {length(@all_in_call)}
                   </span>
                 </div>
-                <span class="text-xs font-medium mt-2">{participant.username}</span>
+                <button
+                  :if={!@in_call}
+                  phx-click="join_call"
+                  class="btn btn-success btn-xs gap-1"
+                >
+                  <.icon name="hero-phone" class="h-3 w-3" /> Unirse
+                </button>
+                <button
+                  :if={@in_call}
+                  phx-click="leave_call"
+                  class="btn btn-error btn-xs gap-1"
+                >
+                  <.icon name="hero-phone-x-mark" class="h-3 w-3" /> Salir
+                </button>
+              </div>
+
+              <div :if={@all_in_call != []} class="px-4 py-4 border-t border-base-300">
+                <div class="flex flex-wrap justify-center gap-6">
+                  <div :for={p <- @all_in_call} class="flex flex-col items-center gap-1.5">
+                    <div
+                      id={"voice-avatar-#{p.user_id}"}
+                      class="relative w-16 h-16 rounded-full flex items-center justify-center text-xl font-bold text-white bg-primary transition-shadow duration-150"
+                    >
+                      <div class="voice-ring absolute inset-0 rounded-full border-3 border-transparent transition-all duration-150">
+                      </div>
+                      {String.first(p.username) |> String.upcase()}
+                      <span class="absolute -bottom-0.5 -right-0.5 w-3.5 h-3.5 bg-success rounded-full border-2 border-base-100">
+                      </span>
+                    </div>
+                    <span class={"text-xs " <> if(p.user_id == @current_user.id, do: "font-semibold", else: "text-base-content/70")}>
+                      {p.username}{if p.user_id == @current_user.id, do: " (tu)", else: ""}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              <div
+                :if={@all_in_call == []}
+                class="px-4 py-5 text-center text-sm text-base-content/40 border-t border-base-300"
+              >
+                Nadie en el canal — unete para hablar
               </div>
             </div>
 
-            <p
-              :if={@call_participants == [] && @in_call}
-              class="text-center text-base-content/40 text-xs py-4"
-            >
-              Esperando a otros...
-            </p>
+            <%!-- Notes Section --%>
+            <div>
+              <div class="flex items-center justify-between mb-4">
+                <h2 class="text-sm font-semibold text-base-content/50 uppercase tracking-wide">
+                  Notas
+                </h2>
+                <button
+                  phx-click="toggle_note_form"
+                  class="text-xs px-3 py-1.5 rounded-lg bg-primary text-primary-content hover:brightness-110 transition-colors"
+                >
+                  {if @show_note_form, do: "Cancelar", else: "+ Nueva"}
+                </button>
+              </div>
 
-            <p
-              :if={!@in_call}
-              class="text-center text-base-content/40 text-xs py-8"
-            >
-              Únete al canal de voz
-            </p>
+              <div
+                :if={@show_note_form}
+                class="mb-4 p-4 bg-base-200 rounded-lg border border-base-300"
+              >
+                <.form for={@note_form} phx-submit="create_note" class="space-y-3">
+                  <.input field={@note_form[:title]} type="text" label="Título" required />
+                  <.input field={@note_form[:content]} type="textarea" label="Contenido" />
+                  <.button type="submit">Crear</.button>
+                </.form>
+              </div>
+
+              <div :if={@notes == []} class="text-center py-12 text-base-content/40 text-sm">
+                No hay notas aún
+              </div>
+
+              <div class="space-y-3">
+                <div :for={note <- @notes} class="border border-base-300 rounded-lg p-4 bg-base-100">
+                  <div class="flex items-center justify-between mb-3">
+                    <div>
+                      <h3 class="font-semibold">{note.title}</h3>
+                      <p :if={note.content} class="text-sm text-base-content/50 mt-0.5">
+                        {note.content}
+                      </p>
+                      <p :if={note.created_by} class="text-xs text-base-content/40 mt-0.5">
+                        por {note.created_by.username}
+                      </p>
+                    </div>
+                    <button
+                      phx-click="delete_note"
+                      phx-value-id={note.id}
+                      data-confirm="¿Eliminar esta nota y todas sus tareas?"
+                      class="text-error/60 hover:text-error text-xs"
+                    >
+                      Eliminar
+                    </button>
+                  </div>
+
+                  <%!-- Tasks --%>
+                  <div class="space-y-1.5">
+                    <div :for={task <- note.tasks} class="flex items-start gap-3 group py-1.5">
+                      <input
+                        type="checkbox"
+                        checked={task.completed}
+                        phx-click="toggle_task"
+                        phx-value-id={task.id}
+                        class="checkbox checkbox-success checkbox-sm mt-0.5"
+                      />
+                      <div class="flex-1 min-w-0">
+                        <p class={"text-sm #{if task.completed, do: "line-through text-base-content/40", else: "text-base-content"}"}>
+                          {task.title}
+                        </p>
+
+                        <div :if={@editing_task == task.id} class="mt-1">
+                          <textarea
+                            phx-blur="save_task_description"
+                            phx-value-id={task.id}
+                            phx-keydown="save_task_description"
+                            phx-key="Enter"
+                            class="w-full text-xs border rounded p-1.5 resize-none"
+                            rows="2"
+                            phx-hook="TaskDescriptionInput"
+                            id={"task-desc-#{task.id}"}
+                          >{@task_description}</textarea>
+                          <div class="flex gap-2 mt-1">
+                            <button
+                              phx-click="save_task_description"
+                              phx-value-id={task.id}
+                              class="text-xs text-blue-600 hover:underline"
+                            >
+                              Guardar
+                            </button>
+                            <button
+                              phx-click="cancel_edit_description"
+                              class="text-xs text-base-content/40 hover:underline"
+                            >
+                              Cancelar
+                            </button>
+                          </div>
+                        </div>
+
+                        <div :if={@editing_task != task.id}>
+                          <p
+                            :if={task.description && task.description != ""}
+                            class="text-xs text-base-content/50 mt-0.5"
+                          >
+                            {task.description}
+                          </p>
+                          <button
+                            phx-click="edit_task_description"
+                            phx-value-id={task.id}
+                            phx-value-description={task.description || ""}
+                            class="text-xs text-base-content/30 hover:text-base-content/50 mt-0.5"
+                          >
+                            {if task.description, do: "editar", else: "+ descripción"}
+                          </button>
+                        </div>
+
+                        <p
+                          :if={task.completed && task.completed_by}
+                          class="text-xs text-green-600 mt-0.5"
+                        >
+                          completada por {task.completed_by.username}
+                        </p>
+                      </div>
+                      <button
+                        phx-click="delete_task"
+                        phx-value-id={task.id}
+                        class="text-error/40 hover:text-error text-xs"
+                      >
+                        x
+                      </button>
+                    </div>
+                  </div>
+
+                  <form phx-submit="add_task" class="mt-3 flex gap-2">
+                    <input type="hidden" name="note_id" value={note.id} />
+                    <input
+                      type="text"
+                      name="title"
+                      placeholder="Nueva tarea..."
+                      class="input input-bordered input-sm flex-1"
+                      autocomplete="off"
+                    />
+                    <button type="submit" class="btn btn-primary btn-sm">+</button>
+                  </form>
+                </div>
+              </div>
+            </div>
           </div>
+        </div>
 
-          <%!-- Call controls --%>
-          <div class="border-t border-base-300 p-3 bg-base-100">
-            <button
-              :if={!@in_call}
-              phx-click="join_call"
-              class="btn btn-success btn-sm w-full gap-2"
-            >
-              <.icon name="hero-phone" class="h-4 w-4" /> Unirse a voz
-            </button>
-            <button
-              :if={@in_call}
-              phx-click="leave_call"
-              class="btn btn-error btn-sm w-full gap-2"
-            >
-              <.icon name="hero-phone-x-mark" class="h-4 w-4" /> Desconectar
-            </button>
+        <%!-- Right sidebar (chat only) --%>
+        <div
+          :if={@right_panel == "chat"}
+          class="w-80 border-l border-base-300 bg-base-200/50 flex flex-col shrink-0"
+        >
+          <div class="flex flex-col h-full">
+            <div class="px-4 py-3 border-b border-base-300 bg-base-100">
+              <h3 class="font-semibold text-sm">Chat</h3>
+            </div>
+            <div class="flex-1 overflow-y-auto p-3 space-y-2" id="chat-messages" phx-hook="ChatScroll">
+              <div :for={msg <- @messages} class="text-sm">
+                <span class="font-semibold text-base-content/70">{msg.user.username}</span>
+                <span class="text-base-content/50 text-xs ml-1">
+                  {Calendar.strftime(msg.inserted_at, "%H:%M")}
+                </span>
+                <p class="text-base-content/60 text-sm mt-0.5">{msg.body}</p>
+              </div>
+              <p :if={@messages == []} class="text-center text-base-content/40 text-xs py-8">
+                Sin mensajes aún
+              </p>
+            </div>
+            <form phx-submit="send_message" class="border-t border-base-300 p-3 bg-base-100">
+              <div class="flex gap-2">
+                <input
+                  type="text"
+                  name="body"
+                  placeholder="Escribe un mensaje..."
+                  class="input input-bordered input-sm flex-1"
+                  autocomplete="off"
+                />
+                <button type="submit" class="btn btn-info btn-sm btn-square">
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    class="h-4 w-4"
+                    viewBox="0 0 20 20"
+                    fill="currentColor"
+                  >
+                    <path d="M10.894 2.553a1 1 0 00-1.788 0l-7 14a1 1 0 001.169 1.409l5-1.429A1 1 0 009 15.571V11a1 1 0 112 0v4.571a1 1 0 00.725.962l5 1.428a1 1 0 001.17-1.408l-7-14z" />
+                  </svg>
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       </div>
+
+      <%!-- Audio elements for WebRTC --%>
+      <div id="webrtc-audio-container" class="hidden"></div>
 
       <%!-- Invite Modal --%>
       <div :if={@show_invite} class="modal modal-open">
