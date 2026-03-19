@@ -9,6 +9,7 @@ defmodule NotiOsw4l.Accounts.User do
     field :password_hash, :string, redact: true
     field :display_name, :string
     field :avatar_url, :string
+    field :last_seen_at, :utc_datetime
 
     timestamps()
   end

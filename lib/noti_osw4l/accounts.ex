@@ -51,6 +51,11 @@ defmodule NotiOsw4l.Accounts do
     |> Repo.update()
   end
 
+  def update_last_seen(user_id) do
+    from(u in User, where: u.id == ^user_id)
+    |> Repo.update_all(set: [last_seen_at: DateTime.utc_now()])
+  end
+
   def search_users(query_string) do
     pattern = "%#{query_string}%"
 

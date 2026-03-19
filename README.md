@@ -8,11 +8,14 @@ Espacio de trabajo colaborativo en tiempo real, inspirado en Notion. Construido 
 - **Workspaces** - CRUD de espacios de trabajo con roles (owner/admin/member)
 - **Notas y Tareas** - Notas con listas de tareas, toggle slide para completar, descripciones inline
 - **Chat en tiempo real** - Mensajes de texto dentro de cada workspace via PubSub
+- **Voz en tiempo real (WebRTC)** - Llamadas de audio P2P entre miembros del workspace con signaling via LiveView
+- **Notificaciones** - Sistema de notificaciones con sonido, badge en campana, dropdown y browser notifications
 - **Cursores en tiempo real** - Cursores compartidos estilo Figma con colores por usuario
 - **Usuarios online** - Vista de todos los usuarios conectados y en que workspace estan
-- **Control de acceso** - Invitar usuarios, solicitar acceso, aceptar/rechazar
+- **Control de acceso** - Invitar usuarios, solicitar acceso, aceptar/rechazar con notificaciones automaticas
 - **Explorar workspaces** - Navegar todos los workspaces y solicitar acceso
 - **Activity log** - Registro asincrono de acciones via Oban (quien creo/completo que tarea en que workspace)
+- **Dark mode** - Tema oscuro/claro con daisyUI
 
 ## Stack
 
@@ -44,7 +47,7 @@ docker compose up --build -d
 ```
 
 - App: [localhost:4000](http://localhost:4000)
-- DBGate: [localhost:3000](http://localhost:3000)
+- DBGate: [localhost:9090](http://localhost:9090)
 
 Las migraciones se ejecutan automaticamente al iniciar el contenedor.
 
@@ -62,7 +65,7 @@ mix phx.server
 ```
 
 - App: [localhost:4000](http://localhost:4000)
-- DBGate: [localhost:3000](http://localhost:3000)
+- DBGate: [localhost:9090](http://localhost:9090)
 - LiveDashboard: [localhost:4000/dev/dashboard](http://localhost:4000/dev/dashboard)
 
 ## Arquitectura
@@ -82,6 +85,8 @@ lib/
       message.ex
     activity/          # Logs de actividad
       log.ex
+    notifications/     # Sistema de notificaciones
+      notification.ex
     workers/           # Oban workers
       activity_log_worker.ex
   noti_osw4l_web/
@@ -93,6 +98,7 @@ lib/
       online_users_live.ex
       browse_workspaces_live.ex
       activity_log_live.ex
+      notification_bell_component.ex
     presence.ex        # Phoenix Presence
     user_auth.ex       # Plugs de autenticacion
 ```
@@ -106,12 +112,16 @@ lib/
 | `Notes` | CRUD notas y tareas, toggle completion |
 | `Chat` | Mensajes de texto por workspace |
 | `Activity` | Logs de actividad |
+| `Notifications` | Notificaciones con PubSub broadcast |
 
 ### Tiempo real
 
-- **PubSub** - Sync de notas/tareas y mensajes de chat entre usuarios
-- **Presence** - Tracking de usuarios online, cursores compartidos
+- **PubSub** - Sync de notas/tareas, mensajes de chat y notificaciones entre usuarios
+- **Presence** - Tracking de usuarios online, cursores compartidos, participantes de llamada
+- **WebRTC** - Audio P2P entre miembros del workspace (signaling via LiveView + PubSub, STUN de Google)
 - **Oban** - Logging asincrono de actividad en cola `:activity`
+- **Web Audio API** - Sonidos de notificacion (oscillator tones)
+- **Browser Notifications** - Notificaciones push del navegador
 
 ## Rutas
 

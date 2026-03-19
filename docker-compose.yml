@@ -31,7 +31,7 @@ services:
       PORT: "4000"
       PHX_SERVER: "true"
     command: >
-      sh -c "/app/bin/migrate && /app/bin/server"
+      sh -c "/app/bin/noti_osw4l eval 'NotiOsw4l.Release.migrate()' && /app/bin/noti_osw4l start"
 
   dbgate:
     image: dbgate/dbgate:latest
@@ -39,20 +39,15 @@ services:
       db:
         condition: service_healthy
     ports:
-      - "3000:3000"
+      - "9090:3000"
     environment:
-      CONNECTIONS: >
-        [
-          {
-            "server": "db",
-            "port": 5432,
-            "user": "postgres",
-            "password": "postgres",
-            "database": "noti_osw4l_dev",
-            "engine": "postgres@dbgate-plugin-postgres",
-            "label": "noti_osw4l_dev"
-          }
-        ]
+      LABEL_noti: noti_osw4l_dev
+      SERVER_noti: db
+      PORT_noti: 5432
+      USER_noti: postgres
+      PASSWORD_noti: postgres
+      DATABASE_noti: noti_osw4l_dev
+      ENGINE_noti: postgres@dbgate-plugin-postgres
     volumes:
       - dbgate_data:/root/.dbgate
 
