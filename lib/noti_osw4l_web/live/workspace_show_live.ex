@@ -373,7 +373,8 @@ defmodule NotiOsw4lWeb.WorkspaceShowLive do
     from_id = socket.assigns.current_user.id
     to_id = if is_binary(to_id), do: String.to_integer(to_id), else: to_id
 
-    Phoenix.PubSub.broadcast(
+    Phoenix.PubSub.broadcast_from(
+      self(),
       NotiOsw4l.PubSub,
       socket.assigns.call_topic,
       {:webrtc_offer, from_id, to_id, offer}
@@ -386,7 +387,8 @@ defmodule NotiOsw4lWeb.WorkspaceShowLive do
     from_id = socket.assigns.current_user.id
     to_id = if is_binary(to_id), do: String.to_integer(to_id), else: to_id
 
-    Phoenix.PubSub.broadcast(
+    Phoenix.PubSub.broadcast_from(
+      self(),
       NotiOsw4l.PubSub,
       socket.assigns.call_topic,
       {:webrtc_answer, from_id, to_id, answer}
@@ -399,7 +401,8 @@ defmodule NotiOsw4lWeb.WorkspaceShowLive do
     from_id = socket.assigns.current_user.id
     to_id = if is_binary(to_id), do: String.to_integer(to_id), else: to_id
 
-    Phoenix.PubSub.broadcast(
+    Phoenix.PubSub.broadcast_from(
+      self(),
       NotiOsw4l.PubSub,
       socket.assigns.call_topic,
       {:webrtc_ice, from_id, to_id, candidate}
@@ -568,7 +571,7 @@ defmodule NotiOsw4lWeb.WorkspaceShowLive do
     assigns = assign(assigns, :all_in_call, all_call_participants(assigns.call_topic))
 
     ~H"""
-    <div class="flex flex-col h-[calc(100vh-4rem)]" id="workspace-area" phx-hook="WebRTCAudio">
+    <div class="flex flex-col h-[calc(100vh-4rem)]" id="workspace-area">
       <%!-- Remote cursors --%>
       <div
         :for={cursor <- @cursors}
@@ -968,8 +971,10 @@ defmodule NotiOsw4lWeb.WorkspaceShowLive do
         </div>
       </div>
 
-      <%!-- Audio elements for WebRTC --%>
-      <div id="webrtc-audio-container" class="hidden"></div>
+      <%!-- WebRTC hook + audio container (phx-update=ignore prevents LiveView from touching it) --%>
+      <div id="webrtc-hook" phx-hook="WebRTCAudio" phx-update="ignore">
+        <div id="webrtc-audio-container"></div>
+      </div>
 
       <%!-- Invite Modal --%>
       <div :if={@show_invite} class="modal modal-open">
